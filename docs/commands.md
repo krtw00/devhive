@@ -4,6 +4,17 @@
 
 ```
 -h, --help    ヘルプを表示
+--json        JSON形式で出力（対応コマンドのみ）
+```
+
+## 環境変数
+
+| 変数名 | 説明 | 例 |
+|--------|------|-----|
+| DEVHIVE_WORKER | デフォルトのワーカー名 | security |
+
+```bash
+export DEVHIVE_WORKER=security
 ```
 
 ---
@@ -27,7 +38,7 @@ devhive init <sprint-id> [flags]
 
 ```bash
 devhive init sprint-05
-devhive init sprint-05 --config ./sprint-05.conf --project /home/user/myproject
+devhive init sprint-05 --project /home/user/myproject
 ```
 
 ---
@@ -44,19 +55,34 @@ devhive status [flags]
 
 | フラグ | 説明 |
 |--------|------|
-| --json | JSON形式で出力（未実装） |
+| --json | JSON形式で出力 |
 
 ### 出力例
 
 ```
-Sprint: sprint-05 (started: 2026-01-18 10:00)
+Sprint: sprint-05 (started: 2025-01-18 10:00)
 
-WORKER    BRANCH             ISSUE  STATUS     COMMIT   REVIEWS  MSGS
-------    ------             -----  ------     ------   -------  ----
-security  fix/security-auth  #313   🔨 working abc1234  1        0
-quality   fix/quality-check  #314   ⏳ pending          0        2
+WORKER    BRANCH             ISSUE  STATUS      TASK                MSGS
+------    ------             -----  ------      ----                ----
+security  fix/security-auth  #313   working     認証APIの実装       0
+quality   fix/quality-check  #314   pending                         2
+```
 
-Pending Reviews: 1
+---
+
+## devhive sprint complete
+
+アクティブなスプリントを完了状態にする。
+
+```bash
+devhive sprint complete
+```
+
+### 例
+
+```bash
+devhive sprint complete
+# ✓ Sprint 'sprint-05' completed
 ```
 
 ---
@@ -78,14 +104,13 @@ devhive worker register <name> <branch> [flags]
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
 | --issue | -i | Issue番号 |
-| --pane | -p | tmuxペインID |
 | --worktree | -w | Worktreeパス |
 
 #### 例
 
 ```bash
-devhive worker register security fix/security-auth -i "#313" -p 1
-devhive worker register quality fix/quality-check -i "#314" -p 2 -w /path/to/worktree
+devhive worker register security fix/security-auth --issue "#313"
+devhive worker register quality fix/quality-check -i "#314" -w /path/to/worktree
 ```
 
 ### devhive worker start
@@ -93,7 +118,7 @@ devhive worker register quality fix/quality-check -i "#314" -p 2 -w /path/to/wor
 ワーカーの作業を開始状態にする。
 
 ```bash
-devhive worker start <name> [flags]
+devhive worker start [name] [flags]
 ```
 
 #### フラグ
@@ -106,7 +131,7 @@ devhive worker start <name> [flags]
 
 ```bash
 devhive worker start security
-devhive worker start security -t "認証APIの実装"
+devhive worker start --task "認証APIの実装"   # DEVHIVE_WORKER使用
 ```
 
 ### devhive worker complete
@@ -114,13 +139,14 @@ devhive worker start security -t "認証APIの実装"
 ワーカーの作業を完了状態にする。
 
 ```bash
-devhive worker complete <name>
+devhive worker complete [name]
 ```
 
 #### 例
 
 ```bash
 devhive worker complete security
+devhive worker complete   # DEVHIVE_WORKER使用
 ```
 
 ### devhive worker status
@@ -128,14 +154,13 @@ devhive worker complete security
 ワーカーの状態を手動で更新する。
 
 ```bash
-devhive worker status <name> <status>
+devhive worker status [name] <status>
 ```
 
 #### 有効なステータス
 
 - `pending` - 待機中
 - `working` - 作業中
-- `review_pending` - レビュー待ち
 - `completed` - 完了
 - `blocked` - ブロック中
 - `error` - エラー
@@ -144,92 +169,70 @@ devhive worker status <name> <status>
 
 ```bash
 devhive worker status security blocked
+devhive worker status blocked   # DEVHIVE_WORKER使用
 ```
 
----
+### devhive worker show
 
-## devhive review
-
-レビュー管理コマンド群。
-
-### devhive review request
-
-レビューを依頼する。
+ワーカーの詳細情報を表示する。
 
 ```bash
-devhive review request <commit> [flags]
+devhive worker show [name] [flags]
 ```
 
 #### フラグ
 
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --worker | -w | ワーカー名（必須） |
-| --desc | -d | 変更内容の説明 |
+| フラグ | 説明 |
+|--------|------|
+| --json | JSON形式で出力 |
 
 #### 例
 
 ```bash
-devhive review request abc1234 -w security -d "認証機能の追加"
-```
-
-### devhive review list
-
-未処理のレビュー一覧を表示する。
-
-```bash
-devhive review list
+devhive worker show security
+devhive worker show --json
 ```
 
 #### 出力例
 
 ```
-ID  WORKER    COMMIT   BRANCH             ISSUE  DESCRIPTION     CREATED
---  ------    ------   ------             -----  -----------     -------
-1   security  abc1234  fix/security-auth  #313   認証機能の追加  10:30
-2   quality   def5678  fix/quality-check  #314   品質チェック追加 10:45
+Worker: security
+Branch: fix/security-auth
+Issue: #313
+Worktree: /home/user/project-security
+Status: working
+Task: 認証APIの実装
+Last Commit: abc1234
+Errors: 0
+Updated: 2025-01-18 10:30:00
 ```
 
-### devhive review ok
+### devhive worker task
 
-レビューを承認する。
+現在のタスク説明を更新する。
 
 ```bash
-devhive review ok <id> [comment] [flags]
+devhive worker task <task>
 ```
-
-#### フラグ
-
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --reviewer | -r | レビュアー名（デフォルト: senior） |
 
 #### 例
 
 ```bash
-devhive review ok 1
-devhive review ok 1 "問題なし"
-devhive review ok 1 "LGTM" -r pm
+devhive worker task "トークン検証の実装中"
 ```
 
-### devhive review fix
+### devhive worker error
 
-レビューで修正を依頼する。
+エラーを報告し、ワーカーをエラー状態にする。
 
 ```bash
-devhive review fix <id> <comment> [flags]
+devhive worker error <message>
 ```
-
-#### フラグ
-
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --reviewer | -r | レビュアー名（デフォルト: senior） |
 
 #### 例
 
 ```bash
-devhive review fix 1 "エラーハンドリングを追加してください"
+devhive worker error "ビルドが失敗しました: missing dependency"
 ```
 
 ---
@@ -250,7 +253,6 @@ devhive msg send <to> <message> [flags]
 
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
-| --from | -f | 送信者名（デフォルト: pm） |
 | --type | -t | メッセージ種別（デフォルト: info） |
 | --subject | -s | 件名 |
 
@@ -258,7 +260,6 @@ devhive msg send <to> <message> [flags]
 
 - `info` - 一般情報
 - `warning` - 警告
-- `conflict` - 競合通知
 - `question` - 質問
 - `answer` - 回答
 - `system` - システム通知
@@ -266,8 +267,8 @@ devhive msg send <to> <message> [flags]
 #### 例
 
 ```bash
-devhive msg send quality "DuelTable.vueを編集します" -f security
-devhive msg send mobile-layout "APIを変更しました" -f backend -t warning -s "API変更通知"
+devhive msg send quality "認証APIを変更しました"
+devhive msg send quality "APIが変わります" --type warning --subject "API変更通知"
 ```
 
 ### devhive msg broadcast
@@ -282,15 +283,14 @@ devhive msg broadcast <message> [flags]
 
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
-| --from | -f | 送信者名（デフォルト: pm） |
 | --type | -t | メッセージ種別（デフォルト: info） |
 | --subject | -s | 件名 |
 
 #### 例
 
 ```bash
-devhive msg broadcast "15分後にマージします" -f pm
-devhive msg broadcast "API仕様が変わりました" -f backend -t warning
+devhive msg broadcast "15分後にマージします"
+devhive msg broadcast "API仕様変更" --type warning
 ```
 
 ### devhive msg unread
@@ -298,14 +298,31 @@ devhive msg broadcast "API仕様が変わりました" -f backend -t warning
 未読メッセージを表示する。
 
 ```bash
-devhive msg unread [worker]
+devhive msg unread [flags]
 ```
+
+#### フラグ
+
+| フラグ | 説明 |
+|--------|------|
+| --json | JSON形式で出力 |
 
 #### 例
 
 ```bash
-devhive msg unread           # 全ての未読メッセージ
-devhive msg unread security  # securityワーカー宛の未読メッセージ
+devhive msg unread
+devhive msg unread --json
+```
+
+#### 出力例
+
+```
+[1] quality → you (10:30)
+    認証APIを変更しました
+
+[2] (broadcast) pm (10:45)
+    Subject: 進捗確認
+    各自の進捗を報告してください
 ```
 
 ### devhive msg read
@@ -313,85 +330,14 @@ devhive msg unread security  # securityワーカー宛の未読メッセージ
 メッセージを既読にする。
 
 ```bash
-devhive msg read <id|all> [flags]
+devhive msg read <id|all>
 ```
-
-#### フラグ
-
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --worker | -w | ワーカー名（allの場合は必須） |
 
 #### 例
 
 ```bash
-devhive msg read 5                    # ID=5のメッセージを既読に
-devhive msg read all -w security      # securityの全メッセージを既読に
-```
-
----
-
-## devhive lock
-
-ファイルロック管理コマンド群。
-
-### devhive lock acquire
-
-ファイルをロックする。
-
-```bash
-devhive lock acquire <file> [flags]
-```
-
-#### フラグ
-
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --worker | -w | ワーカー名（必須） |
-| --reason | -r | ロック理由 |
-
-#### 例
-
-```bash
-devhive lock acquire src/components/DuelTable.vue -w security
-devhive lock acquire src/auth.py -w security -r "認証ロジック変更"
-```
-
-### devhive lock release
-
-ファイルのロックを解除する。
-
-```bash
-devhive lock release <file> [flags]
-```
-
-#### フラグ
-
-| フラグ | 短縮 | 説明 |
-|--------|------|------|
-| --worker | -w | ワーカー名（必須） |
-
-#### 例
-
-```bash
-devhive lock release src/components/DuelTable.vue -w security
-```
-
-### devhive lock list
-
-現在のロック一覧を表示する。
-
-```bash
-devhive lock list
-```
-
-#### 出力例
-
-```
-FILE                              LOCKED BY  REASON        SINCE
-----                              ---------  ------        -----
-src/components/DuelTable.vue      security   編集中         5m30s
-src/auth.py                       backend    認証ロジック   2m10s
+devhive msg read 5          # ID=5のメッセージを既読に
+devhive msg read all        # 全メッセージを既読に
 ```
 
 ---
@@ -411,25 +357,65 @@ devhive events [flags]
 | --limit | -l | 表示件数（デフォルト: 50） |
 | --type | -t | イベント種別でフィルタ |
 | --worker | -w | ワーカーでフィルタ |
+| --json | | JSON形式で出力 |
 
 ### 例
 
 ```bash
 devhive events
 devhive events --limit 20
-devhive events -t review_requested
-devhive events -w security --limit 10
+devhive events --type worker_status_changed
+devhive events --worker security --limit 10
 ```
 
 ### 出力例
 
 ```
-10:45:30 file_locked [security] {file:src/auth.py}
-10:44:15 review_requested [security] {commit:abc1234}
-10:43:00 worker_status_changed [security] {status:working}
-10:42:30 worker_registered [security] {branch:fix/security-auth,issue:#313}
+10:45:30 message_sent [security] {to:quality,type:info}
+10:44:15 worker_status_changed [security] {status:working}
+10:43:00 worker_registered [security] {branch:fix/security-auth,issue:#313}
 10:42:00 sprint_created {sprint_id:sprint-05}
 ```
+
+---
+
+## devhive watch
+
+状態変化をリアルタイムで監視する。
+
+```bash
+devhive watch [flags]
+```
+
+### フラグ
+
+| フラグ | 短縮 | 説明 |
+|--------|------|------|
+| --filter | -f | 監視対象のフィルタ |
+
+### フィルタ値
+
+- `message` - メッセージのみ
+- `worker` - ワーカー状態変化のみ
+- (なし) - 全ての変化
+
+### 例
+
+```bash
+devhive watch                    # 全変化を監視
+devhive watch --filter=message   # メッセージのみ
+devhive watch --filter=worker    # ワーカー状態変化のみ
+```
+
+### 出力例
+
+```
+[12:34:56] message: quality → you: "DuelTable.vue編集します"
+[12:35:10] worker: quality → completed
+[12:36:00] message: (broadcast) pm: "15分後にマージします"
+```
+
+Ctrl+Cで終了。
 
 ---
 
@@ -444,5 +430,5 @@ devhive version
 ### 出力例
 
 ```
-devhive v0.1.0
+devhive v0.2.0
 ```
