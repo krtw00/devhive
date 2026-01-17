@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -18,7 +19,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "devhive",
 		Short: "Parallel development coordination tool",
-		Long:  "DevHive - Manage parallel development with tmux, git worktree, and multiple Claude Code instances",
+		Long:  "DevHive - Manage parallel development state with SQLite",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip DB for version command
 			if cmd.Name() == "version" {
@@ -39,15 +40,26 @@ func main() {
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(sprintCmd())
 	rootCmd.AddCommand(workerCmd())
-	rootCmd.AddCommand(reviewCmd())
 	rootCmd.AddCommand(msgCmd())
-	rootCmd.AddCommand(lockCmd())
 	rootCmd.AddCommand(eventsCmd())
+	rootCmd.AddCommand(watchCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// getWorkerName returns the worker name from args or environment variable
+func getWorkerName(args []string, index int) (string, error) {
+	if len(args) > index {
+		return args[index], nil
+	}
+	if name := os.Getenv("DEVHIVE_WORKER"); name != "" {
+		return name, nil
+	}
+	return "", fmt.Errorf("worker name required (set DEVHIVE_WORKER or provide as argument)")
 }
 
 func versionCmd() *cobra.Command {
@@ -55,7 +67,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("devhive v0.1.0")
+			fmt.Println("devhive v0.2.0")
 		},
 	}
 }
@@ -95,16 +107,30 @@ func statusCmd() *cobra.Command {
 				return err
 			}
 			if sprint == nil {
-				fmt.Println("No active sprint")
+				if jsonOutput {
+					fmt.Println("{}")
+				} else {
+					fmt.Println("No active sprint")
+				}
 				return nil
 			}
-
-			fmt.Printf("Sprint: %s (started: %s)\n\n", sprint.ID, sprint.StartedAt.Format("2006-01-02 15:04"))
 
 			workers, err := database.GetAllWorkers()
 			if err != nil {
 				return err
 			}
+
+			if jsonOutput {
+				output := map[string]interface{}{
+					"sprint":  sprint,
+					"workers": workers,
+				}
+				b, _ := json.MarshalIndent(output, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+
+			fmt.Printf("Sprint: %s (started: %s)\n\n", sprint.ID, sprint.StartedAt.Format("2006-01-02 15:04"))
 
 			if len(workers) == 0 {
 				fmt.Println("No workers registered")
@@ -112,24 +138,18 @@ func statusCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "WORKER\tBRANCH\tISSUE\tSTATUS\tCOMMIT\tREVIEWS\tMSGS")
-			fmt.Fprintln(w, "------\t------\t-----\t------\t------\t-------\t----")
+			fmt.Fprintln(w, "WORKER\tBRANCH\tISSUE\tSTATUS\tTASK\tMSGS")
+			fmt.Fprintln(w, "------\t------\t-----\t------\t----\t----")
 			for _, worker := range workers {
-				commit := worker.LastCommit
-				if len(commit) > 7 {
-					commit = commit[:7]
+				task := worker.CurrentTask
+				if len(task) > 20 {
+					task = task[:17] + "..."
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
 					worker.Name, worker.Branch, worker.Issue, statusIcon(worker.Status),
-					commit, worker.PendingReviews, worker.UnreadMessages)
+					task, worker.UnreadMessages)
 			}
 			w.Flush()
-
-			// Show pending reviews
-			reviews, _ := database.GetPendingReviews()
-			if len(reviews) > 0 {
-				fmt.Printf("\nPending Reviews: %d\n", len(reviews))
-			}
 
 			return nil
 		},
@@ -145,8 +165,6 @@ func statusIcon(status string) string {
 		return "⏳ pending"
 	case "working":
 		return "🔨 working"
-	case "review_pending":
-		return "👀 review"
 	case "completed":
 		return "✅ done"
 	case "blocked":
@@ -156,6 +174,29 @@ func statusIcon(status string) string {
 	default:
 		return status
 	}
+}
+
+func sprintCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sprint",
+		Short: "Sprint management",
+	}
+
+	completeCmd := &cobra.Command{
+		Use:   "complete",
+		Short: "Complete the active sprint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sprintID, err := database.CompleteSprint()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Sprint '%s' completed\n", sprintID)
+			return nil
+		},
+	}
+
+	cmd.AddCommand(completeCmd)
+	return cmd
 }
 
 func workerCmd() *cobra.Command {
@@ -171,7 +212,6 @@ func workerCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			issue, _ := cmd.Flags().GetString("issue")
-			paneStr, _ := cmd.Flags().GetString("pane")
 			worktree, _ := cmd.Flags().GetString("worktree")
 
 			sprint, err := database.GetActiveSprint()
@@ -179,13 +219,7 @@ func workerCmd() *cobra.Command {
 				return fmt.Errorf("no active sprint")
 			}
 
-			var paneID *int
-			if paneStr != "" {
-				p, _ := strconv.Atoi(paneStr)
-				paneID = &p
-			}
-
-			err = database.RegisterWorker(args[0], sprint.ID, args[1], issue, paneID, worktree)
+			err = database.RegisterWorker(args[0], sprint.ID, args[1], issue, worktree)
 			if err != nil {
 				return err
 			}
@@ -194,25 +228,29 @@ func workerCmd() *cobra.Command {
 		},
 	}
 	registerCmd.Flags().StringP("issue", "i", "", "Issue number")
-	registerCmd.Flags().StringP("pane", "p", "", "Tmux pane ID")
 	registerCmd.Flags().StringP("worktree", "w", "", "Worktree path")
 
 	// worker start
 	startCmd := &cobra.Command{
-		Use:   "start <name>",
+		Use:   "start [name]",
 		Short: "Mark worker as started",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := getWorkerName(args, 0)
+			if err != nil {
+				return err
+			}
+
 			task, _ := cmd.Flags().GetString("task")
 			var taskPtr *string
 			if task != "" {
 				taskPtr = &task
 			}
-			err := database.UpdateWorkerStatus(args[0], "working", taskPtr, nil, nil)
+			err = database.UpdateWorkerStatus(name, "working", taskPtr, nil)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Worker '%s' started\n", args[0])
+			fmt.Printf("✓ Worker '%s' started\n", name)
 			return nil
 		},
 	}
@@ -220,143 +258,146 @@ func workerCmd() *cobra.Command {
 
 	// worker complete
 	completeCmd := &cobra.Command{
-		Use:   "complete <name>",
+		Use:   "complete [name]",
 		Short: "Mark worker as completed",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := database.UpdateWorkerStatus(args[0], "completed", nil, nil, nil)
+			name, err := getWorkerName(args, 0)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Worker '%s' completed\n", args[0])
+
+			err = database.UpdateWorkerStatus(name, "completed", nil, nil)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Worker '%s' completed\n", name)
 			return nil
 		},
 	}
 
 	// worker status (update)
-	statusCmd := &cobra.Command{
-		Use:   "status <name> <status>",
+	statusUpdateCmd := &cobra.Command{
+		Use:   "status [name] <status>",
 		Short: "Update worker status",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := database.UpdateWorkerStatus(args[0], args[1], nil, nil, nil)
+			var name, status string
+			if len(args) == 2 {
+				name = args[0]
+				status = args[1]
+			} else {
+				var err error
+				name, err = getWorkerName(nil, 0)
+				if err != nil {
+					return err
+				}
+				status = args[0]
+			}
+
+			err := database.UpdateWorkerStatus(name, status, nil, nil)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Worker '%s' status updated to '%s'\n", args[0], args[1])
+			fmt.Printf("✓ Worker '%s' status updated to '%s'\n", name, status)
 			return nil
 		},
 	}
 
-	cmd.AddCommand(registerCmd, startCmd, completeCmd, statusCmd)
-	return cmd
-}
-
-func reviewCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "review",
-		Short: "Review management",
-	}
-
-	// review request
-	requestCmd := &cobra.Command{
-		Use:   "request <commit>",
-		Short: "Request a review",
-		Args:  cobra.ExactArgs(1),
+	// worker show
+	showCmd := &cobra.Command{
+		Use:   "show [name]",
+		Short: "Show worker details",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			worker, _ := cmd.Flags().GetString("worker")
-			desc, _ := cmd.Flags().GetString("desc")
-
-			if worker == "" {
-				return fmt.Errorf("--worker is required")
-			}
-
-			id, err := database.RequestReview(worker, args[0], desc)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("✓ Review requested (ID: %d)\n", id)
-			return nil
-		},
-	}
-	requestCmd.Flags().StringP("worker", "w", "", "Worker name (required)")
-	requestCmd.Flags().StringP("desc", "d", "", "Description")
-
-	// review list
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List pending reviews",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			reviews, err := database.GetPendingReviews()
+			name, err := getWorkerName(args, 0)
 			if err != nil {
 				return err
 			}
 
-			if len(reviews) == 0 {
-				fmt.Println("No pending reviews")
+			worker, err := database.GetWorker(name)
+			if err != nil {
+				return err
+			}
+			if worker == nil {
+				return fmt.Errorf("worker not found: %s", name)
+			}
+
+			jsonOutput, _ := cmd.Flags().GetBool("json")
+			if jsonOutput {
+				b, _ := json.MarshalIndent(worker, "", "  ")
+				fmt.Println(string(b))
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tWORKER\tCOMMIT\tBRANCH\tISSUE\tDESCRIPTION\tCREATED")
-			fmt.Fprintln(w, "--\t------\t------\t------\t-----\t-----------\t-------")
-			for _, r := range reviews {
-				desc := r.Description
-				if len(desc) > 30 {
-					desc = desc[:27] + "..."
-				}
-				fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					r.ID, r.Worker, r.CommitHash[:7], r.Branch, r.Issue, desc,
-					r.CreatedAt.Format("15:04"))
+			fmt.Printf("Worker: %s\n", worker.Name)
+			fmt.Printf("Branch: %s\n", worker.Branch)
+			if worker.Issue != "" {
+				fmt.Printf("Issue: %s\n", worker.Issue)
 			}
-			w.Flush()
+			if worker.WorktreePath != "" {
+				fmt.Printf("Worktree: %s\n", worker.WorktreePath)
+			}
+			fmt.Printf("Status: %s\n", statusIcon(worker.Status))
+			if worker.CurrentTask != "" {
+				fmt.Printf("Task: %s\n", worker.CurrentTask)
+			}
+			if worker.LastCommit != "" {
+				fmt.Printf("Last Commit: %s\n", worker.LastCommit)
+			}
+			fmt.Printf("Errors: %d\n", worker.ErrorCount)
+			if worker.LastError != "" {
+				fmt.Printf("Last Error: %s\n", worker.LastError)
+			}
+			fmt.Printf("Updated: %s\n", worker.UpdatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Printf("Unread Messages: %d\n", worker.UnreadMessages)
+
 			return nil
 		},
 	}
+	showCmd.Flags().Bool("json", false, "Output as JSON")
 
-	// review ok
-	okCmd := &cobra.Command{
-		Use:   "ok <id> [comment]",
-		Short: "Approve a review",
-		Args:  cobra.RangeArgs(1, 2),
+	// worker task
+	taskCmd := &cobra.Command{
+		Use:   "task <task>",
+		Short: "Update current task",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, _ := strconv.Atoi(args[0])
-			reviewer, _ := cmd.Flags().GetString("reviewer")
-			comment := ""
-			if len(args) > 1 {
-				comment = args[1]
-			}
-
-			err := database.ResolveReview(id, "ok", reviewer, comment)
+			name, err := getWorkerName(nil, 0)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Review #%d approved\n", id)
-			return nil
-		},
-	}
-	okCmd.Flags().StringP("reviewer", "r", "senior", "Reviewer name")
 
-	// review fix
-	fixCmd := &cobra.Command{
-		Use:   "fix <id> <comment>",
-		Short: "Request fixes for a review",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id, _ := strconv.Atoi(args[0])
-			reviewer, _ := cmd.Flags().GetString("reviewer")
-
-			err := database.ResolveReview(id, "needs_fix", reviewer, args[1])
+			err = database.UpdateWorkerTask(name, args[0])
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Review #%d marked as needs_fix\n", id)
+			fmt.Printf("✓ Task updated\n")
 			return nil
 		},
 	}
-	fixCmd.Flags().StringP("reviewer", "r", "senior", "Reviewer name")
 
-	cmd.AddCommand(requestCmd, listCmd, okCmd, fixCmd)
+	// worker error
+	errorCmd := &cobra.Command{
+		Use:   "error <message>",
+		Short: "Report an error",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := getWorkerName(nil, 0)
+			if err != nil {
+				return err
+			}
+
+			err = database.ReportWorkerError(name, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Error reported\n")
+			return nil
+		},
+	}
+
+	cmd.AddCommand(registerCmd, startCmd, completeCmd, statusUpdateCmd, showCmd, taskCmd, errorCmd)
 	return cmd
 }
 
@@ -372,20 +413,27 @@ func msgCmd() *cobra.Command {
 		Short: "Send a message to a worker",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			from, _ := cmd.Flags().GetString("from")
+			from, err := getWorkerName(nil, 0)
+			if err != nil {
+				// Allow sending without being a worker (e.g., pm)
+				from, _ = cmd.Flags().GetString("from")
+				if from == "" {
+					from = "pm"
+				}
+			}
+
 			msgType, _ := cmd.Flags().GetString("type")
 			subject, _ := cmd.Flags().GetString("subject")
 
-			to := args[0]
-			_, err := database.SendMessage(from, &to, msgType, subject, args[1])
+			_, err = database.SendMessage(from, args[0], msgType, subject, args[1])
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ Message sent to '%s'\n", to)
+			fmt.Printf("✓ Message sent to '%s'\n", args[0])
 			return nil
 		},
 	}
-	sendCmd.Flags().StringP("from", "f", "pm", "Sender name")
+	sendCmd.Flags().StringP("from", "f", "", "Sender name (default: DEVHIVE_WORKER or 'pm')")
 	sendCmd.Flags().StringP("type", "t", "info", "Message type")
 	sendCmd.Flags().StringP("subject", "s", "", "Subject")
 
@@ -395,36 +443,49 @@ func msgCmd() *cobra.Command {
 		Short: "Broadcast a message to all workers",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			from, _ := cmd.Flags().GetString("from")
+			from, err := getWorkerName(nil, 0)
+			if err != nil {
+				from, _ = cmd.Flags().GetString("from")
+				if from == "" {
+					from = "pm"
+				}
+			}
+
 			msgType, _ := cmd.Flags().GetString("type")
 			subject, _ := cmd.Flags().GetString("subject")
 
-			_, err := database.SendMessage(from, nil, msgType, subject, args[0])
+			count, err := database.BroadcastMessage(from, msgType, subject, args[0])
 			if err != nil {
 				return err
 			}
-			fmt.Println("✓ Message broadcast to all workers")
+			fmt.Printf("✓ Message broadcast to %d workers\n", count)
 			return nil
 		},
 	}
-	broadcastCmd.Flags().StringP("from", "f", "pm", "Sender name")
+	broadcastCmd.Flags().StringP("from", "f", "", "Sender name (default: DEVHIVE_WORKER or 'pm')")
 	broadcastCmd.Flags().StringP("type", "t", "info", "Message type")
 	broadcastCmd.Flags().StringP("subject", "s", "", "Subject")
 
 	// msg unread
 	unreadCmd := &cobra.Command{
-		Use:   "unread [worker]",
+		Use:   "unread",
 		Short: "Show unread messages",
-		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var worker *string
-			if len(args) > 0 {
-				worker = &args[0]
-			}
-
-			messages, err := database.GetUnreadMessages(worker)
+			name, err := getWorkerName(nil, 0)
 			if err != nil {
 				return err
+			}
+
+			messages, err := database.GetUnreadMessages(name)
+			if err != nil {
+				return err
+			}
+
+			jsonOutput, _ := cmd.Flags().GetBool("json")
+			if jsonOutput {
+				b, _ := json.MarshalIndent(messages, "", "  ")
+				fmt.Println(string(b))
+				return nil
 			}
 
 			if len(messages) == 0 {
@@ -433,11 +494,7 @@ func msgCmd() *cobra.Command {
 			}
 
 			for _, m := range messages {
-				to := m.ToWorker
-				if to == "" {
-					to = "(broadcast)"
-				}
-				fmt.Printf("[%d] %s → %s (%s)\n", m.ID, m.FromWorker, to, m.CreatedAt.Format("15:04"))
+				fmt.Printf("[%d] %s → you (%s)\n", m.ID, m.FromWorker, m.CreatedAt.Format("15:04"))
 				if m.Subject != "" {
 					fmt.Printf("    Subject: %s\n", m.Subject)
 				}
@@ -446,6 +503,7 @@ func msgCmd() *cobra.Command {
 			return nil
 		},
 	}
+	unreadCmd.Flags().Bool("json", false, "Output as JSON")
 
 	// msg read
 	readCmd := &cobra.Command{
@@ -453,20 +511,23 @@ func msgCmd() *cobra.Command {
 		Short: "Mark message(s) as read",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			worker, _ := cmd.Flags().GetString("worker")
+			name, err := getWorkerName(nil, 0)
+			if err != nil {
+				return err
+			}
 
 			if args[0] == "all" {
-				if worker == "" {
-					return fmt.Errorf("--worker is required for 'all'")
-				}
-				count, err := database.MarkAllRead(worker)
+				count, err := database.MarkAllRead(name)
 				if err != nil {
 					return err
 				}
 				fmt.Printf("✓ Marked %d messages as read\n", count)
 			} else {
-				id, _ := strconv.Atoi(args[0])
-				err := database.MarkMessageRead(id)
+				id, err := strconv.Atoi(args[0])
+				if err != nil {
+					return fmt.Errorf("invalid message ID: %s", args[0])
+				}
+				err = database.MarkMessageRead(id)
 				if err != nil {
 					return err
 				}
@@ -475,91 +536,8 @@ func msgCmd() *cobra.Command {
 			return nil
 		},
 	}
-	readCmd.Flags().StringP("worker", "w", "", "Worker name (required for 'all')")
 
 	cmd.AddCommand(sendCmd, broadcastCmd, unreadCmd, readCmd)
-	return cmd
-}
-
-func lockCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "lock",
-		Short: "File lock management",
-	}
-
-	// lock acquire (also available as just "lock <file>")
-	acquireCmd := &cobra.Command{
-		Use:   "acquire <file>",
-		Short: "Acquire a file lock",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			worker, _ := cmd.Flags().GetString("worker")
-			reason, _ := cmd.Flags().GetString("reason")
-
-			if worker == "" {
-				return fmt.Errorf("--worker is required")
-			}
-
-			err := database.AcquireLock(args[0], worker, reason)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("✓ Lock acquired on '%s'\n", args[0])
-			return nil
-		},
-	}
-	acquireCmd.Flags().StringP("worker", "w", "", "Worker name (required)")
-	acquireCmd.Flags().StringP("reason", "r", "", "Reason for lock")
-
-	// lock release
-	releaseCmd := &cobra.Command{
-		Use:   "release <file>",
-		Short: "Release a file lock",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			worker, _ := cmd.Flags().GetString("worker")
-			if worker == "" {
-				return fmt.Errorf("--worker is required")
-			}
-
-			err := database.ReleaseLock(args[0], worker)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("✓ Lock released on '%s'\n", args[0])
-			return nil
-		},
-	}
-	releaseCmd.Flags().StringP("worker", "w", "", "Worker name (required)")
-
-	// lock list
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all locks",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			locks, err := database.GetAllLocks()
-			if err != nil {
-				return err
-			}
-
-			if len(locks) == 0 {
-				fmt.Println("No active locks")
-				return nil
-			}
-
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "FILE\tLOCKED BY\tREASON\tSINCE")
-			fmt.Fprintln(w, "----\t---------\t------\t-----")
-			for _, l := range locks {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					l.FilePath, l.LockedBy, l.Reason, time.Since(l.LockedAt).Round(time.Second))
-			}
-			w.Flush()
-			return nil
-		},
-	}
-
-	cmd.AddCommand(acquireCmd, releaseCmd, listCmd)
 	return cmd
 }
 
@@ -571,6 +549,7 @@ func eventsCmd() *cobra.Command {
 			limit, _ := cmd.Flags().GetInt("limit")
 			eventType, _ := cmd.Flags().GetString("type")
 			worker, _ := cmd.Flags().GetString("worker")
+			jsonOutput, _ := cmd.Flags().GetBool("json")
 
 			var eventTypePtr, workerPtr *string
 			if eventType != "" {
@@ -583,6 +562,12 @@ func eventsCmd() *cobra.Command {
 			events, err := database.GetRecentEvents(limit, eventTypePtr, workerPtr)
 			if err != nil {
 				return err
+			}
+
+			if jsonOutput {
+				b, _ := json.MarshalIndent(events, "", "  ")
+				fmt.Println(string(b))
+				return nil
 			}
 
 			if len(events) == 0 {
@@ -608,5 +593,109 @@ func eventsCmd() *cobra.Command {
 	cmd.Flags().IntP("limit", "l", 50, "Number of events to show")
 	cmd.Flags().StringP("type", "t", "", "Filter by event type")
 	cmd.Flags().StringP("worker", "w", "", "Filter by worker")
+	cmd.Flags().Bool("json", false, "Output as JSON")
 	return cmd
+}
+
+func watchCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Watch for state changes",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			interval, _ := cmd.Flags().GetInt("interval")
+			filter, _ := cmd.Flags().GetString("filter")
+
+			// Get current worker for message filtering
+			currentWorker, _ := getWorkerName(nil, 0)
+
+			// Get last event ID
+			lastID, err := database.GetLastEventID()
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("Watching for changes... (Ctrl+C to stop)")
+
+			var filterPtr *string
+			if filter != "" {
+				filterPtr = &filter
+			}
+
+			for {
+				time.Sleep(time.Duration(interval) * time.Second)
+
+				events, err := database.GetEventsSince(lastID, filterPtr)
+				if err != nil {
+					continue
+				}
+
+				for _, e := range events {
+					lastID = e.ID
+					printEvent(e, currentWorker)
+				}
+			}
+		},
+	}
+
+	cmd.Flags().IntP("interval", "i", 1, "Polling interval in seconds")
+	cmd.Flags().StringP("filter", "f", "", "Filter events (message, worker)")
+	return cmd
+}
+
+func printEvent(e db.Event, currentWorker string) {
+	timestamp := e.CreatedAt.Format("15:04:05")
+
+	switch e.EventType {
+	case "message_sent":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		to, _ := data["to"].(string)
+		if currentWorker != "" && to != currentWorker {
+			return // Skip messages not for us
+		}
+		fmt.Printf("[%s] message: %s → %s\n", timestamp, e.Worker, to)
+
+	case "message_broadcast":
+		fmt.Printf("[%s] message: (broadcast) %s\n", timestamp, e.Worker)
+
+	case "worker_status_changed":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		status, _ := data["status"].(string)
+		fmt.Printf("[%s] worker: %s → %s\n", timestamp, e.Worker, status)
+
+	case "worker_task_updated":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		task, _ := data["task"].(string)
+		fmt.Printf("[%s] task: %s: %s\n", timestamp, e.Worker, task)
+
+	case "worker_error":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		msg, _ := data["message"].(string)
+		fmt.Printf("[%s] error: %s: %s\n", timestamp, e.Worker, msg)
+
+	case "worker_registered":
+		fmt.Printf("[%s] registered: %s\n", timestamp, e.Worker)
+
+	case "sprint_created":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		sprintID, _ := data["sprint_id"].(string)
+		fmt.Printf("[%s] sprint created: %s\n", timestamp, sprintID)
+
+	case "sprint_completed":
+		var data map[string]interface{}
+		json.Unmarshal([]byte(e.Data), &data)
+		sprintID, _ := data["sprint_id"].(string)
+		fmt.Printf("[%s] sprint completed: %s\n", timestamp, sprintID)
+
+	default:
+		workerStr := ""
+		if e.Worker != "" {
+			workerStr = fmt.Sprintf(" [%s]", e.Worker)
+		}
+		fmt.Printf("[%s] %s%s\n", timestamp, e.EventType, workerStr)
+	}
 }
