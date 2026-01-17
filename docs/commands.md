@@ -62,10 +62,10 @@ devhive status [flags]
 ```
 Sprint: sprint-05 (started: 2025-01-18 10:00)
 
-WORKER    BRANCH             ISSUE  STATUS      TASK                MSGS
-------    ------             -----  ------      ----                ----
-security  fix/security-auth  #313   working     認証APIの実装       0
-quality   fix/quality-check  #314   pending                         2
+WORKER    ROLE      BRANCH             STATUS      TASK                MSGS
+------    ----      ------             ------      ----                ----
+security  security  fix/security-auth  working     認証APIの実装       0
+quality   quality   fix/quality-check  pending                         2
 ```
 
 ---
@@ -103,14 +103,18 @@ devhive worker register <name> <branch> [flags]
 
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
-| --issue | -i | Issue番号 |
+| --role | -r | ロール名（事前に `devhive role create` で作成） |
 | --worktree | -w | Worktreeパス |
 
 #### 例
 
 ```bash
-devhive worker register security fix/security-auth --issue "#313"
-devhive worker register quality fix/quality-check -i "#314" -w /path/to/worktree
+# 事前にロールを作成
+devhive role create security --description "セキュリティ担当" --role-file roles/security.md
+
+# ワーカー登録時にロールを指定
+devhive worker register security fix/security-auth --role security
+devhive worker register quality fix/quality-check -r quality -w /path/to/worktree
 ```
 
 ### devhive worker start
@@ -197,14 +201,16 @@ devhive worker show --json
 
 ```
 Worker: security
+Role: security
+Role File: roles/security.md
 Branch: fix/security-auth
-Issue: #313
 Worktree: /home/user/project-security
 Status: working
 Task: 認証APIの実装
 Last Commit: abc1234
 Errors: 0
 Updated: 2025-01-18 10:30:00
+Unread Messages: 0
 ```
 
 ### devhive worker task
@@ -233,6 +239,133 @@ devhive worker error <message>
 
 ```bash
 devhive worker error "ビルドが失敗しました: missing dependency"
+```
+
+---
+
+## devhive role
+
+ロール管理コマンド群。ロールはワーカーに割り当てる役割を定義するマスタデータ。
+
+### devhive role create
+
+ロールを作成する。
+
+```bash
+devhive role create <name> [flags]
+```
+
+#### フラグ
+
+| フラグ | 短縮 | 説明 |
+|--------|------|------|
+| --description | -d | ロールの説明 |
+| --role-file | -f | ロール定義ファイルのパス |
+
+#### 例
+
+```bash
+devhive role create security --description "セキュリティ担当" --role-file roles/security.md
+devhive role create frontend -d "フロントエンド担当"
+```
+
+### devhive role list
+
+全ロールを一覧表示する。
+
+```bash
+devhive role list [flags]
+```
+
+#### フラグ
+
+| フラグ | 説明 |
+|--------|------|
+| --json | JSON形式で出力 |
+
+#### 例
+
+```bash
+devhive role list
+devhive role list --json
+```
+
+#### 出力例
+
+```
+NAME      DESCRIPTION             ROLE FILE
+----      -----------             ---------
+security  セキュリティ担当        roles/security.md
+frontend  フロントエンド担当
+quality   品質管理担当            roles/quality.md
+```
+
+### devhive role show
+
+ロールの詳細情報を表示する。
+
+```bash
+devhive role show <name> [flags]
+```
+
+#### フラグ
+
+| フラグ | 説明 |
+|--------|------|
+| --json | JSON形式で出力 |
+
+#### 例
+
+```bash
+devhive role show security
+devhive role show security --json
+```
+
+#### 出力例
+
+```
+Role: security
+Description: セキュリティ担当
+Role File: roles/security.md
+Created: 2025-01-18 10:00:00
+```
+
+### devhive role update
+
+ロールの情報を更新する。
+
+```bash
+devhive role update <name> [flags]
+```
+
+#### フラグ
+
+| フラグ | 短縮 | 説明 |
+|--------|------|------|
+| --description | -d | ロールの説明 |
+| --role-file | -f | ロール定義ファイルのパス |
+
+#### 例
+
+```bash
+devhive role update security --description "セキュリティ・認証担当"
+devhive role update security --role-file roles/security-v2.md
+```
+
+### devhive role delete
+
+ロールを削除する。
+
+```bash
+devhive role delete <name>
+```
+
+**注意**: ワーカーに割り当てられているロールを削除すると、該当ワーカーの `role_name` は NULL になる（ON DELETE SET NULL）。
+
+#### 例
+
+```bash
+devhive role delete security
 ```
 
 ---
@@ -373,7 +506,7 @@ devhive events --worker security --limit 10
 ```
 10:45:30 message_sent [security] {to:quality,type:info}
 10:44:15 worker_status_changed [security] {status:working}
-10:43:00 worker_registered [security] {branch:fix/security-auth,issue:#313}
+10:43:00 worker_registered [security] {branch:fix/security-auth,role:security}
 10:42:00 sprint_created {sprint_id:sprint-05}
 ```
 
@@ -430,5 +563,5 @@ devhive version
 ### 出力例
 
 ```
-devhive v0.2.0
+devhive v0.3.0
 ```

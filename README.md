@@ -27,14 +27,21 @@ sudo ln -s $(pwd)/devhive /usr/local/bin/devhive
 devhive init sprint-01
 ```
 
-### 2. ワーカー登録
+### 2. ロール作成（オプション）
 
 ```bash
-devhive worker register security fix/security-auth --issue "#101"
-devhive worker register frontend fix/ui-update --issue "#102"
+devhive role create security --description "セキュリティ担当" --role-file roles/security.md
+devhive role create frontend --description "フロントエンド担当"
 ```
 
-### 3. ワーカー側の設定
+### 3. ワーカー登録
+
+```bash
+devhive worker register security fix/security-auth --role security
+devhive worker register frontend fix/ui-update --role frontend
+```
+
+### 4. ワーカー側の設定
 
 各ワーカー環境で環境変数を設定:
 
@@ -42,13 +49,13 @@ devhive worker register frontend fix/ui-update --issue "#102"
 export DEVHIVE_WORKER=security
 ```
 
-### 4. 作業開始
+### 5. 作業開始
 
 ```bash
 devhive worker start --task "認証APIの実装"
 ```
 
-### 5. 状態確認
+### 6. 状態確認
 
 ```bash
 devhive status
@@ -57,13 +64,13 @@ devhive status
 ```
 Sprint: sprint-01 (started: 2025-01-18 10:00)
 
-WORKER    BRANCH             ISSUE  STATUS   TASK              MSGS
-------    ------             -----  ------   ----              ----
-security  fix/security-auth  #101   working  認証APIの実装     0
-frontend  fix/ui-update      #102   pending                    0
+WORKER    ROLE      BRANCH             STATUS   TASK              MSGS
+------    ----      ------             ------   ----              ----
+security  security  fix/security-auth  working  認証APIの実装     0
+frontend  frontend  fix/ui-update      pending                    0
 ```
 
-### 6. ワーカー間通信
+### 7. ワーカー間通信
 
 ```bash
 # メッセージ送信
@@ -76,7 +83,7 @@ devhive msg unread
 devhive msg broadcast "15分後にマージします"
 ```
 
-### 7. 状態監視
+### 8. 状態監視
 
 ```bash
 # 全ての変化を監視
@@ -99,6 +106,11 @@ devhive watch --filter=message
 | `devhive worker show` | 詳細表示 |
 | `devhive worker task <task>` | タスク更新 |
 | `devhive worker error <message>` | エラー報告 |
+| `devhive role create <name>` | ロール作成 |
+| `devhive role list` | ロール一覧 |
+| `devhive role show <name>` | ロール詳細表示 |
+| `devhive role update <name>` | ロール更新 |
+| `devhive role delete <name>` | ロール削除 |
 | `devhive msg send <to> <message>` | メッセージ送信 |
 | `devhive msg broadcast <message>` | 全員に送信 |
 | `devhive msg unread` | 未読確認 |

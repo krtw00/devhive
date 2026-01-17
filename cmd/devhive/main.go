@@ -41,6 +41,7 @@ func main() {
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(statusCmd())
 	rootCmd.AddCommand(sprintCmd())
+	rootCmd.AddCommand(roleCmd())
 	rootCmd.AddCommand(workerCmd())
 	rootCmd.AddCommand(msgCmd())
 	rootCmd.AddCommand(eventsCmd())
@@ -62,12 +63,20 @@ func getWorkerName(args []string, index int) (string, error) {
 	return "", fmt.Errorf("worker name required (set DEVHIVE_WORKER or provide as argument)")
 }
 
+// stringPtr returns a pointer to s if non-empty, otherwise nil
+func stringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("devhive v0.2.0")
+			fmt.Println("devhive v0.3.0")
 		},
 	}
 }
@@ -138,15 +147,15 @@ func statusCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "WORKER\tBRANCH\tISSUE\tSTATUS\tTASK\tMSGS")
-			fmt.Fprintln(w, "------\t------\t-----\t------\t----\t----")
+			fmt.Fprintln(w, "WORKER\tROLE\tBRANCH\tSTATUS\tTASK\tMSGS")
+			fmt.Fprintln(w, "------\t----\t------\t------\t----\t----")
 			for _, worker := range workers {
 				task := worker.CurrentTask
 				if len(task) > 20 {
 					task = task[:17] + "..."
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-					worker.Name, worker.Branch, worker.Issue, statusIcon(worker.Status),
+					worker.Name, worker.RoleName, worker.Branch, statusIcon(worker.Status),
 					task, worker.UnreadMessages)
 			}
 			w.Flush()
@@ -199,6 +208,159 @@ func sprintCmd() *cobra.Command {
 	return cmd
 }
 
+func roleCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "role",
+		Short: "Role management",
+	}
+
+	// role create
+	createCmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create a new role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			description, _ := cmd.Flags().GetString("description")
+			roleFile, _ := cmd.Flags().GetString("file")
+
+			err := database.CreateRole(args[0], description, roleFile)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Role '%s' created\n", args[0])
+			return nil
+		},
+	}
+	createCmd.Flags().StringP("description", "d", "", "Role description")
+	createCmd.Flags().StringP("file", "f", "", "Role definition file path")
+
+	// role list
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all roles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			roles, err := database.GetAllRoles()
+			if err != nil {
+				return err
+			}
+
+			jsonOutput, _ := cmd.Flags().GetBool("json")
+			if jsonOutput {
+				b, _ := json.MarshalIndent(roles, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+
+			if len(roles) == 0 {
+				fmt.Println("No roles defined")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tDESCRIPTION\tFILE")
+			fmt.Fprintln(w, "----\t-----------\t----")
+			for _, role := range roles {
+				desc := role.Description
+				if len(desc) > 30 {
+					desc = desc[:27] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", role.Name, desc, role.RoleFile)
+			}
+			w.Flush()
+			return nil
+		},
+	}
+	listCmd.Flags().Bool("json", false, "Output as JSON")
+
+	// role show
+	showCmd := &cobra.Command{
+		Use:   "show <name>",
+		Short: "Show role details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			role, err := database.GetRole(args[0])
+			if err != nil {
+				return err
+			}
+			if role == nil {
+				return fmt.Errorf("role not found: %s", args[0])
+			}
+
+			jsonOutput, _ := cmd.Flags().GetBool("json")
+			if jsonOutput {
+				b, _ := json.MarshalIndent(role, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+
+			fmt.Printf("Name: %s\n", role.Name)
+			if role.Description != "" {
+				fmt.Printf("Description: %s\n", role.Description)
+			}
+			if role.RoleFile != "" {
+				fmt.Printf("File: %s\n", role.RoleFile)
+			}
+			fmt.Printf("Created: %s\n", role.CreatedAt.Format("2006-01-02 15:04:05"))
+			return nil
+		},
+	}
+	showCmd.Flags().Bool("json", false, "Output as JSON")
+
+	// role update
+	updateCmd := &cobra.Command{
+		Use:   "update <name>",
+		Short: "Update a role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get current role first
+			role, err := database.GetRole(args[0])
+			if err != nil {
+				return err
+			}
+			if role == nil {
+				return fmt.Errorf("role not found: %s", args[0])
+			}
+
+			description := role.Description
+			roleFile := role.RoleFile
+
+			if cmd.Flags().Changed("description") {
+				description, _ = cmd.Flags().GetString("description")
+			}
+			if cmd.Flags().Changed("file") {
+				roleFile, _ = cmd.Flags().GetString("file")
+			}
+
+			err = database.UpdateRole(args[0], description, roleFile)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Role '%s' updated\n", args[0])
+			return nil
+		},
+	}
+	updateCmd.Flags().StringP("description", "d", "", "Role description")
+	updateCmd.Flags().StringP("file", "f", "", "Role definition file path")
+
+	// role delete
+	deleteCmd := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a role",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			err := database.DeleteRole(args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ Role '%s' deleted\n", args[0])
+			return nil
+		},
+	}
+
+	cmd.AddCommand(createCmd, listCmd, showCmd, updateCmd, deleteCmd)
+	return cmd
+}
+
 func workerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "worker",
@@ -211,7 +373,7 @@ func workerCmd() *cobra.Command {
 		Short: "Register a worker",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			issue, _ := cmd.Flags().GetString("issue")
+			roleName, _ := cmd.Flags().GetString("role")
 			worktree, _ := cmd.Flags().GetString("worktree")
 
 			sprint, err := database.GetActiveSprint()
@@ -219,7 +381,7 @@ func workerCmd() *cobra.Command {
 				return fmt.Errorf("no active sprint")
 			}
 
-			err = database.RegisterWorker(args[0], sprint.ID, args[1], issue, worktree)
+			err = database.RegisterWorker(args[0], sprint.ID, args[1], roleName, worktree)
 			if err != nil {
 				return err
 			}
@@ -227,7 +389,7 @@ func workerCmd() *cobra.Command {
 			return nil
 		},
 	}
-	registerCmd.Flags().StringP("issue", "i", "", "Issue number")
+	registerCmd.Flags().StringP("role", "r", "", "Role name (must exist in roles table)")
 	registerCmd.Flags().StringP("worktree", "w", "", "Worktree path")
 
 	// worker start
@@ -331,10 +493,13 @@ func workerCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Worker: %s\n", worker.Name)
-			fmt.Printf("Branch: %s\n", worker.Branch)
-			if worker.Issue != "" {
-				fmt.Printf("Issue: %s\n", worker.Issue)
+			if worker.RoleName != "" {
+				fmt.Printf("Role: %s\n", worker.RoleName)
 			}
+			if worker.RoleFile != "" {
+				fmt.Printf("Role File: %s\n", worker.RoleFile)
+			}
+			fmt.Printf("Branch: %s\n", worker.Branch)
 			if worker.WorktreePath != "" {
 				fmt.Printf("Worktree: %s\n", worker.WorktreePath)
 			}
@@ -551,15 +716,7 @@ func eventsCmd() *cobra.Command {
 			worker, _ := cmd.Flags().GetString("worker")
 			jsonOutput, _ := cmd.Flags().GetBool("json")
 
-			var eventTypePtr, workerPtr *string
-			if eventType != "" {
-				eventTypePtr = &eventType
-			}
-			if worker != "" {
-				workerPtr = &worker
-			}
-
-			events, err := database.GetRecentEvents(limit, eventTypePtr, workerPtr)
+			events, err := database.GetRecentEvents(limit, stringPtr(eventType), stringPtr(worker))
 			if err != nil {
 				return err
 			}
@@ -616,15 +773,10 @@ func watchCmd() *cobra.Command {
 
 			fmt.Println("Watching for changes... (Ctrl+C to stop)")
 
-			var filterPtr *string
-			if filter != "" {
-				filterPtr = &filter
-			}
-
 			for {
 				time.Sleep(time.Duration(interval) * time.Second)
 
-				events, err := database.GetEventsSince(lastID, filterPtr)
+				events, err := database.GetEventsSince(lastID, stringPtr(filter))
 				if err != nil {
 					continue
 				}
@@ -642,53 +794,51 @@ func watchCmd() *cobra.Command {
 	return cmd
 }
 
+// parseEventData parses JSON event data and returns the value for a key
+func parseEventData(data, key string) string {
+	var parsed map[string]interface{}
+	json.Unmarshal([]byte(data), &parsed)
+	if val, ok := parsed[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
 func printEvent(e db.Event, currentWorker string) {
 	timestamp := e.CreatedAt.Format("15:04:05")
 
 	switch e.EventType {
 	case "message_sent":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		to, _ := data["to"].(string)
+		to := parseEventData(e.Data, "to")
 		if currentWorker != "" && to != currentWorker {
 			return // Skip messages not for us
 		}
-		fmt.Printf("[%s] message: %s → %s\n", timestamp, e.Worker, to)
+		fmt.Printf("[%s] message: %s -> %s\n", timestamp, e.Worker, to)
 
 	case "message_broadcast":
 		fmt.Printf("[%s] message: (broadcast) %s\n", timestamp, e.Worker)
 
 	case "worker_status_changed":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		status, _ := data["status"].(string)
-		fmt.Printf("[%s] worker: %s → %s\n", timestamp, e.Worker, status)
+		status := parseEventData(e.Data, "status")
+		fmt.Printf("[%s] worker: %s -> %s\n", timestamp, e.Worker, status)
 
 	case "worker_task_updated":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		task, _ := data["task"].(string)
+		task := parseEventData(e.Data, "task")
 		fmt.Printf("[%s] task: %s: %s\n", timestamp, e.Worker, task)
 
 	case "worker_error":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		msg, _ := data["message"].(string)
+		msg := parseEventData(e.Data, "message")
 		fmt.Printf("[%s] error: %s: %s\n", timestamp, e.Worker, msg)
 
 	case "worker_registered":
 		fmt.Printf("[%s] registered: %s\n", timestamp, e.Worker)
 
 	case "sprint_created":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		sprintID, _ := data["sprint_id"].(string)
+		sprintID := parseEventData(e.Data, "sprint_id")
 		fmt.Printf("[%s] sprint created: %s\n", timestamp, sprintID)
 
 	case "sprint_completed":
-		var data map[string]interface{}
-		json.Unmarshal([]byte(e.Data), &data)
-		sprintID, _ := data["sprint_id"].(string)
+		sprintID := parseEventData(e.Data, "sprint_id")
 		fmt.Printf("[%s] sprint completed: %s\n", timestamp, sprintID)
 
 	default:

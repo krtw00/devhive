@@ -62,6 +62,18 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
+// ============================================
+// Data Structures
+// ============================================
+
+// Role represents a worker role
+type Role struct {
+	Name        string
+	Description string
+	RoleFile    string
+	CreatedAt   time.Time
+}
+
 // Sprint represents a sprint
 type Sprint struct {
 	ID          string
@@ -77,7 +89,8 @@ type Worker struct {
 	Name           string
 	SprintID       string
 	Branch         string
-	Issue          string
+	RoleName       string // FK to roles.name
+	RoleFile       string // From joined roles table
 	WorktreePath   string
 	Status         string
 	CurrentTask    string
@@ -109,6 +122,17 @@ type Event struct {
 	CreatedAt time.Time
 }
 
+// ============================================
+// Helper Functions
+// ============================================
+
+func nullString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // logEvent logs an event
 func (db *DB) logEvent(eventType, worker string, data map[string]interface{}) error {
 	var dataJSON *string
@@ -124,14 +148,92 @@ func (db *DB) logEvent(eventType, worker string, data map[string]interface{}) er
 	return err
 }
 
-func nullString(s string) *string {
-	if s == "" {
-		return nil
+// checkRowsAffected verifies that at least one row was affected by an update/delete
+func checkRowsAffected(result sql.Result, entityType, name string) error {
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%s not found: %s", entityType, name)
 	}
-	return &s
+	return nil
 }
 
-// --- Sprint Operations ---
+// ============================================
+// Role Operations
+// ============================================
+
+// CreateRole creates a new role
+func (db *DB) CreateRole(name, description, roleFile string) error {
+	_, err := db.conn.Exec(
+		"INSERT INTO roles (name, description, role_file) VALUES (?, ?, ?)",
+		name, nullString(description), nullString(roleFile),
+	)
+	return err
+}
+
+// GetRole returns a role by name
+func (db *DB) GetRole(name string) (*Role, error) {
+	row := db.conn.QueryRow(`
+		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), created_at
+		FROM roles WHERE name = ?
+	`, name)
+
+	var r Role
+	err := row.Scan(&r.Name, &r.Description, &r.RoleFile, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// GetAllRoles returns all roles
+func (db *DB) GetAllRoles() ([]Role, error) {
+	rows, err := db.conn.Query(`
+		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), created_at
+		FROM roles ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []Role
+	for rows.Next() {
+		var r Role
+		err := rows.Scan(&r.Name, &r.Description, &r.RoleFile, &r.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, r)
+	}
+	return roles, nil
+}
+
+// UpdateRole updates a role
+func (db *DB) UpdateRole(name, description, roleFile string) error {
+	result, err := db.conn.Exec(`
+		UPDATE roles SET description = ?, role_file = ? WHERE name = ?
+	`, nullString(description), nullString(roleFile), name)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result, "role", name)
+}
+
+// DeleteRole deletes a role
+func (db *DB) DeleteRole(name string) error {
+	result, err := db.conn.Exec("DELETE FROM roles WHERE name = ?", name)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result, "role", name)
+}
+
+// ============================================
+// Sprint Operations
+// ============================================
 
 // CreateSprint creates a new sprint
 func (db *DB) CreateSprint(id, configFile, projectPath string) error {
@@ -204,26 +306,55 @@ func (db *DB) CompleteSprint() (string, error) {
 	return sprint.ID, nil
 }
 
-// --- Worker Operations ---
+// ============================================
+// Worker Operations
+// ============================================
+
+// workerSelectColumns defines the standard columns for worker queries
+const workerSelectColumns = `
+	w.name, w.sprint_id, w.branch, COALESCE(w.role_name, ''), COALESCE(r.role_file, ''),
+	COALESCE(w.worktree_path, ''), w.status, COALESCE(w.current_task, ''),
+	COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
+	(SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL)`
+
+// scanWorker scans a worker row into a Worker struct
+func scanWorker(scanner interface{ Scan(...interface{}) error }) (Worker, error) {
+	var w Worker
+	err := scanner.Scan(&w.Name, &w.SprintID, &w.Branch, &w.RoleName, &w.RoleFile,
+		&w.WorktreePath, &w.Status, &w.CurrentTask, &w.LastCommit, &w.ErrorCount,
+		&w.LastError, &w.UpdatedAt, &w.UnreadMessages)
+	return w, err
+}
 
 // RegisterWorker registers a worker
-func (db *DB) RegisterWorker(name, sprintID, branch, issue, worktreePath string) error {
+func (db *DB) RegisterWorker(name, sprintID, branch, roleName, worktreePath string) error {
+	// Validate role exists if specified
+	if roleName != "" {
+		role, err := db.GetRole(roleName)
+		if err != nil {
+			return err
+		}
+		if role == nil {
+			return fmt.Errorf("role not found: %s", roleName)
+		}
+	}
+
 	_, err := db.conn.Exec(`
-		INSERT INTO workers (name, sprint_id, branch, issue, worktree_path)
+		INSERT INTO workers (name, sprint_id, branch, role_name, worktree_path)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			sprint_id = excluded.sprint_id,
 			branch = excluded.branch,
-			issue = excluded.issue,
+			role_name = excluded.role_name,
 			worktree_path = excluded.worktree_path,
 			status = 'pending',
 			updated_at = CURRENT_TIMESTAMP
-	`, name, sprintID, branch, nullString(issue), nullString(worktreePath))
+	`, name, sprintID, branch, nullString(roleName), nullString(worktreePath))
 	if err != nil {
 		return err
 	}
 
-	return db.logEvent("worker_registered", name, map[string]interface{}{"branch": branch, "issue": issue})
+	return db.logEvent("worker_registered", name, map[string]interface{}{"branch": branch, "role": roleName})
 }
 
 // UpdateWorkerStatus updates worker status
@@ -247,12 +378,9 @@ func (db *DB) UpdateWorkerStatus(name, status string, currentTask, lastCommit *s
 	if err != nil {
 		return err
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("worker not found: %s", name)
+	if err := checkRowsAffected(result, "worker", name); err != nil {
+		return err
 	}
-
 	return db.logEvent("worker_status_changed", name, map[string]interface{}{"status": status})
 }
 
@@ -265,12 +393,9 @@ func (db *DB) UpdateWorkerTask(name, task string) error {
 	if err != nil {
 		return err
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("worker not found: %s", name)
+	if err := checkRowsAffected(result, "worker", name); err != nil {
+		return err
 	}
-
 	return db.logEvent("worker_task_updated", name, map[string]interface{}{"task": task})
 }
 
@@ -283,29 +408,22 @@ func (db *DB) ReportWorkerError(name, message string) error {
 	if err != nil {
 		return err
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("worker not found: %s", name)
+	if err := checkRowsAffected(result, "worker", name); err != nil {
+		return err
 	}
-
 	return db.logEvent("worker_error", name, map[string]interface{}{"message": message})
 }
 
 // GetWorker returns a worker by name
 func (db *DB) GetWorker(name string) (*Worker, error) {
 	row := db.conn.QueryRow(`
-		SELECT w.name, w.sprint_id, w.branch, COALESCE(w.issue, ''), COALESCE(w.worktree_path, ''),
-		       w.status, COALESCE(w.current_task, ''), COALESCE(w.last_commit, ''), w.error_count,
-		       COALESCE(w.last_error, ''), w.updated_at,
-		       (SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL) as unread_messages
-		FROM workers w WHERE w.name = ?
+		SELECT `+workerSelectColumns+`
+		FROM workers w
+		LEFT JOIN roles r ON w.role_name = r.name
+		WHERE w.name = ?
 	`, name)
 
-	var w Worker
-	err := row.Scan(&w.Name, &w.SprintID, &w.Branch, &w.Issue, &w.WorktreePath,
-		&w.Status, &w.CurrentTask, &w.LastCommit, &w.ErrorCount, &w.LastError, &w.UpdatedAt,
-		&w.UnreadMessages)
+	w, err := scanWorker(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -318,11 +436,9 @@ func (db *DB) GetWorker(name string) (*Worker, error) {
 // GetAllWorkers returns all workers for active sprint
 func (db *DB) GetAllWorkers() ([]Worker, error) {
 	rows, err := db.conn.Query(`
-		SELECT w.name, w.sprint_id, w.branch, COALESCE(w.issue, ''),
-		       COALESCE(w.worktree_path, ''), w.status, COALESCE(w.current_task, ''),
-		       COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
-		       (SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL) as unread_messages
+		SELECT `+workerSelectColumns+`
 		FROM workers w
+		LEFT JOIN roles r ON w.role_name = r.name
 		WHERE w.sprint_id = (SELECT id FROM sprints WHERE status = 'active' ORDER BY started_at DESC LIMIT 1)
 		ORDER BY w.name
 	`)
@@ -333,10 +449,7 @@ func (db *DB) GetAllWorkers() ([]Worker, error) {
 
 	var workers []Worker
 	for rows.Next() {
-		var w Worker
-		err := rows.Scan(&w.Name, &w.SprintID, &w.Branch, &w.Issue, &w.WorktreePath,
-			&w.Status, &w.CurrentTask, &w.LastCommit, &w.ErrorCount, &w.LastError, &w.UpdatedAt,
-			&w.UnreadMessages)
+		w, err := scanWorker(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +480,9 @@ func (db *DB) GetAllWorkerNames() ([]string, error) {
 	return names, nil
 }
 
-// --- Message Operations ---
+// ============================================
+// Message Operations
+// ============================================
 
 // SendMessage sends a message to a specific worker
 func (db *DB) SendMessage(from, to, msgType, subject, content string) (int64, error) {
@@ -414,7 +529,7 @@ func (db *DB) BroadcastMessage(from, msgType, subject, content string) (int, err
 // GetUnreadMessages returns unread messages for a worker
 func (db *DB) GetUnreadMessages(worker string) ([]Message, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, from_worker, COALESCE(to_worker, ''), message_type, COALESCE(subject, ''),
+		SELECT id, from_worker, to_worker, message_type, COALESCE(subject, ''),
 		       content, read_at, created_at
 		FROM messages
 		WHERE to_worker = ? AND read_at IS NULL
@@ -463,11 +578,29 @@ func (db *DB) MarkAllRead(worker string) (int64, error) {
 	return result.RowsAffected()
 }
 
-// --- Event Operations ---
+// ============================================
+// Event Operations
+// ============================================
+
+// eventSelectColumns defines the standard columns for event queries
+const eventSelectColumns = "id, event_type, COALESCE(worker, ''), COALESCE(data, ''), created_at"
+
+// scanEvents scans all rows into Event structs
+func scanEvents(rows *sql.Rows) ([]Event, error) {
+	var events []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.EventType, &e.Worker, &e.Data, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, nil
+}
 
 // GetRecentEvents returns recent events
 func (db *DB) GetRecentEvents(limit int, eventType, worker *string) ([]Event, error) {
-	query := "SELECT id, event_type, COALESCE(worker, ''), COALESCE(data, ''), created_at FROM events WHERE 1=1"
+	query := "SELECT " + eventSelectColumns + " FROM events WHERE 1=1"
 	args := []interface{}{}
 
 	if eventType != nil {
@@ -488,21 +621,12 @@ func (db *DB) GetRecentEvents(limit int, eventType, worker *string) ([]Event, er
 	}
 	defer rows.Close()
 
-	var events []Event
-	for rows.Next() {
-		var e Event
-		err := rows.Scan(&e.ID, &e.EventType, &e.Worker, &e.Data, &e.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, nil
+	return scanEvents(rows)
 }
 
 // GetEventsSince returns events since a given ID
 func (db *DB) GetEventsSince(lastID int, eventType *string) ([]Event, error) {
-	query := "SELECT id, event_type, COALESCE(worker, ''), COALESCE(data, ''), created_at FROM events WHERE id > ?"
+	query := "SELECT " + eventSelectColumns + " FROM events WHERE id > ?"
 	args := []interface{}{lastID}
 
 	if eventType != nil {
@@ -518,16 +642,7 @@ func (db *DB) GetEventsSince(lastID int, eventType *string) ([]Event, error) {
 	}
 	defer rows.Close()
 
-	var events []Event
-	for rows.Next() {
-		var e Event
-		err := rows.Scan(&e.ID, &e.EventType, &e.Worker, &e.Data, &e.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, nil
+	return scanEvents(rows)
 }
 
 // GetLastEventID returns the ID of the most recent event
