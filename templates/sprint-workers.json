@@ -1,0 +1,19 @@
+{
+  "workers": [
+    {
+      "name": "frontend",
+      "branch": "feat/ui-improvements",
+      "role": "frontend"
+    },
+    {
+      "name": "backend",
+      "branch": "feat/api-v2",
+      "role": "backend"
+    },
+    {
+      "name": "test-docs",
+      "branch": "docs/e2e-tests",
+      "role": "test-doc"
+    }
+  ]
+}

@@ -21,6 +21,7 @@ DevHiveは、Git Worktree + 複数のAIエージェント（Claude Code等）に
 3. **シンプルなCLI**: 直感的なコマンド体系
 4. **環境非依存**: tmux/screen/複数ターミナル等、どの環境でも動作
 5. **最小限の機能**: 状態管理に専念、プロセス管理は外部に委譲
+6. **マスターDBなし**: プロジェクトごとに独立したDB、横断表示はスキャンで実現
 
 ## 2. アーキテクチャ
 
@@ -74,6 +75,48 @@ DevHiveはコア機能（状態管理）に専念し、実行環境との連携�
                     │   state.db        │
                     │  (共有データベース) │
                     └───────────────────┘
+```
+
+### 2.3 マルチプロジェクト構成
+
+複数のプロジェクトで同時に並列開発を行う場合の構成:
+
+```
+~/.devhive/
+├── state.db                     # グローバルDB（プロジェクト未指定時）
+└── projects/
+    ├── project-a/
+    │   └── state.db             # プロジェクトA専用
+    ├── project-b/
+    │   └── state.db             # プロジェクトB専用
+    └── project-c/
+        └── state.db             # プロジェクトC専用
+```
+
+#### 設計判断: マスターDBなし
+
+| 選択肢 | 採用 | 理由 |
+|--------|------|------|
+| マスターDB + プロジェクトDB | ❌ | 同期問題、複雑性 |
+| プロジェクトDBのみ | ✅ | シンプル、整合性保証 |
+
+横断的な表示（`devhive projects`）は、各プロジェクトDBをスキャンして集約:
+
+```
+devhive projects 実行時:
+  1. ~/.devhive/projects/*/state.db をスキャン
+  2. 各DBから sprint, workers を読み取り
+  3. 集約して表示
+```
+
+#### 並行アクセス対策
+
+SQLite WALモードを使用して、複数セッションからの同時アクセスに対応:
+
+```go
+// 接続時に設定
+db.Exec("PRAGMA journal_mode=WAL")
+db.Exec("PRAGMA busy_timeout=5000")
 ```
 
 ## 3. データモデル
@@ -131,6 +174,7 @@ DevHiveはコア機能（状態管理）に専念し、実行環境との連携�
 | name | TEXT (PK) | ロール名（例: security） |
 | description | TEXT | ロールの説明 |
 | role_file | TEXT | ロール定義ファイルのパス |
+| args | TEXT | AIツール起動引数（例: --model sonnet） |
 | created_at | TIMESTAMP | 作成日時 |
 
 ##### message_types（メッセージ種別）
@@ -170,11 +214,21 @@ DevHiveはコア機能（状態管理）に専念し、実行環境との連携�
 | role_name | TEXT | ロール名 | roles.name (SET NULL) |
 | worktree_path | TEXT | Worktreeパス | - |
 | status | TEXT | pending/working/completed/blocked/error | - |
+| session_state | TEXT | running/waiting_permission/idle/stopped | - |
 | current_task | TEXT | 現在のタスク説明 | - |
 | last_commit | TEXT | 最新コミットハッシュ | - |
 | error_count | INTEGER | エラー回数 | - |
 | last_error | TEXT | 最後のエラー内容 | - |
 | updated_at | TIMESTAMP | 更新日時 | - |
+
+##### session_state の意味
+
+| 状態 | アイコン | 説明 |
+|------|----------|------|
+| running | ▶ | セッションがアクティブに実行中 |
+| waiting_permission | ⏸ | ユーザーの権限確認待ち |
+| idle | ○ | セッションは開いているが待機中 |
+| stopped | ■ | セッション終了 |
 
 ##### messages（メッセージ）
 
@@ -207,6 +261,8 @@ DevHiveはコア機能（状態管理）に専念し、実行環境との連携�
 devhive
 ├── init <sprint-id>              # スプリント初期化
 ├── status                        # 全体状態表示
+├── projects                      # 全プロジェクト一覧（横断表示）
+├── help                          # ヘルプ・使い方表示
 ├── sprint
 │   └── complete                  # スプリント完了
 ├── worker
@@ -214,6 +270,7 @@ devhive
 │   ├── start [name]              # 作業開始
 │   ├── complete [name]           # 作業完了
 │   ├── status [name] <status>    # 状態変更
+│   ├── session <state>           # セッション状態更新
 │   ├── show [name]               # 詳細表示
 │   ├── task <task>               # タスク更新
 │   └── error <message>           # エラー報告
@@ -231,21 +288,39 @@ devhive
 
 | 変数名 | 説明 | 例 |
 |--------|------|-----|
-| DEVHIVE_PROJECT | プロジェクト名（DB分離用） | duel-log-app |
+| DEVHIVE_PROJECT | プロジェクト名（DB分離用、最低優先度） | duel-log-app |
 | DEVHIVE_WORKER | デフォルトのワーカー名 | security |
 
-#### プロジェクト指定
+#### プロジェクト自動検出
 
-プロジェクトを指定すると、DBが `~/.devhive/projects/<project>/state.db` に分離される:
+DevHiveはプロジェクトを自動的に検出する。検出の優先順位:
+
+| 優先度 | 方法 | 説明 |
+|--------|------|------|
+| 1 | `--project` / `-P` フラグ | 明示的な指定（最優先） |
+| 2 | `.devhive` ファイル | cwdから上位へ検索、ファイル内容がプロジェクト名 |
+| 3 | パス検出 | `~/.devhive/projects/<name>/...` 配下にいる場合 |
+| 4 | `DEVHIVE_PROJECT` 環境変数 | 後方互換性のため（最低優先度） |
+
+#### プロジェクト指定方法
 
 ```bash
-# 方法1: 環境変数
-export DEVHIVE_PROJECT=duel-log-app
-devhive init sprint-01
-
-# 方法2: --project フラグ（-P）
+# 方法1: --project フラグ（-P）（最優先）
 devhive --project duel-log-app init sprint-01
 devhive -P duel-log-app status
+
+# 方法2: .devhive ファイル（プロジェクトルートに配置）
+echo "duel-log-app" > /path/to/project/.devhive
+cd /path/to/project
+devhive status  # 自動的に duel-log-app を検出
+
+# 方法3: ~/.devhive/projects/ 配下で作業
+cd ~/.devhive/projects/duel-log-app/worktrees/frontend
+devhive status  # 自動的に duel-log-app を検出
+
+# 方法4: 環境変数（後方互換性）
+export DEVHIVE_PROJECT=duel-log-app
+devhive init sprint-01
 ```
 
 #### ワーカー名省略
@@ -316,6 +391,7 @@ devhive worker complete
 | sprint_completed | スプリント完了 | {"sprint_id": "sprint-05"} |
 | worker_registered | ワーカー登録 | {"branch": "fix/xxx", "issue": "#123"} |
 | worker_status_changed | ワーカー状態変更 | {"status": "working"} |
+| worker_session_changed | セッション状態変更 | {"session_state": "waiting_permission"} |
 | worker_task_updated | タスク更新 | {"task": "認証API実装中"} |
 | worker_error | エラー報告 | {"message": "ビルド失敗"} |
 | message_sent | メッセージ送信 | {"to": "quality", "type": "info"} |
@@ -352,14 +428,72 @@ devhive watch --filter=worker    # ワーカー状態変化のみ
 4. **設定ファイル読み込み**: sprint.confの自動パース
 5. **VS Code拡張**: エディタ統合
 
-### 7.2 連携スクリプト
+### 7.2 Worktree自動作成
+
+`devhive worker register`に`--create-worktree`フラグを付けると、Git Worktreeを自動作成:
+
+```bash
+# Worktreeを自動作成
+devhive worker register frontend feat/frontend --create-worktree
+
+# 作成先: ~/.devhive/projects/<project>/worktrees/<worker-name>
+```
+
+### 7.3 Claude Code Hooks連携
+
+Claude Codeのhooks機能と連携して、セッション状態を自動更新できる。
+
+#### セットアップ
+
+```bash
+# インストール
+./scripts/devhive-setup-hooks.sh --install
+
+# 確認
+./scripts/devhive-setup-hooks.sh --show
+
+# アンインストール
+./scripts/devhive-setup-hooks.sh --uninstall
+```
+
+#### 動作
+
+| フック | トリガー | 状態変更 |
+|--------|----------|----------|
+| PreToolUse | Bash/Edit/Write実行前 | → waiting_permission |
+| PostToolUse | Bash/Edit/Write実行後 | → running |
+| Stop | Claude停止時 | → idle |
+
+#### 設定例（~/.claude/settings.json）
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash|Edit|Write",
+      "hooks": [{"type": "command", "command": "devhive worker session waiting_permission"}]
+    }],
+    "PostToolUse": [{
+      "matcher": "Bash|Edit|Write",
+      "hooks": [{"type": "command", "command": "devhive worker session running"}]
+    }],
+    "Stop": [{
+      "hooks": [{"type": "command", "command": "devhive worker session idle"}]
+    }]
+  }
+}
+```
+
+### 7.4 連携スクリプト
 
 DevHiveは状態管理に専念し、実行環境との連携はオプションのスクリプトで提供:
 
 ```
 scripts/
-├── devhive-tmux.sh      # tmuxセッション起動・管理
-├── devhive-worktree.sh  # Git Worktree作成補助
+├── devhive-launch.sh       # AIツール起動
+├── devhive-send-task.sh    # タスク送信
+├── devhive-dashboard.sh    # ダッシュボード
+├── devhive-setup-hooks.sh  # Claude Code Hooks設定
 └── examples/
     └── sprint.conf.example
 ```
@@ -379,7 +513,8 @@ devhive/
 │   ├── design.md            # 本ドキュメント
 │   └── commands.md          # コマンドリファレンス
 ├── scripts/                 # 連携スクリプト（オプション）
-├── templates/               # CLAUDE.mdテンプレート
+├── templates/
+│   └── WORKER_ROLE.md       # Worker role template (reference)
 ├── go.mod
 ├── go.sum
 ├── README.md
@@ -396,11 +531,9 @@ devhive/
 └── projects/
     └── <project-name>/
         ├── state.db         # プロジェクト専用DB
-        ├── roles/           # ロール定義ファイル
-        │   ├── frontend.md
+        ├── roles/           # ロール定義ファイル（CLAUDE.md内容を含む）
+        │   ├── frontend.md  # → Worktreeに CLAUDE.md としてコピー
         │   └── backend.md
-        ├── templates/       # CLAUDE.mdテンプレート
-        │   └── CLAUDE.md
         ├── sprints/         # スプリント設定
         │   └── sprint-01.conf
         └── worktrees/       # Git Worktree配置場所

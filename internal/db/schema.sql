@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS roles (
     name TEXT PRIMARY KEY,
     description TEXT,
     role_file TEXT,
+    args TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -40,6 +41,7 @@ INSERT OR IGNORE INTO event_types (name, description) VALUES
     ('sprint_completed', 'Sprint was completed'),
     ('worker_registered', 'Worker was registered'),
     ('worker_status_changed', 'Worker status changed'),
+    ('worker_session_changed', 'Worker session state changed'),
     ('worker_task_updated', 'Worker task was updated'),
     ('worker_error', 'Worker reported an error'),
     ('message_sent', 'Message was sent'),
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS workers (
     role_name TEXT,
     worktree_path TEXT,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'working', 'completed', 'blocked', 'error')),
+    session_state TEXT DEFAULT 'stopped' CHECK(session_state IN ('running', 'waiting_permission', 'idle', 'stopped')),
     current_task TEXT,
     last_commit TEXT,
     error_count INTEGER DEFAULT 0,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -15,21 +16,124 @@ import (
 //go:embed schema.sql
 var schema string
 
-// ProjectName is set by the CLI via --project flag or DEVHIVE_PROJECT env var
+// ProjectName is set by the CLI via --project flag
 var ProjectName string
 
+// DetectProject detects the project name from various sources
+// Priority: 1. Flag, 2. .devhive file, 3. Path detection, 4. Env var
+func DetectProject() string {
+	// 1. Explicit flag (highest priority)
+	if ProjectName != "" {
+		return ProjectName
+	}
+
+	// 2. .devhive file (search from cwd up to root)
+	if project := findDevhiveFile(); project != "" {
+		return project
+	}
+
+	// 3. Path detection (~/.devhive/projects/<name>/...)
+	if project := detectFromPath(); project != "" {
+		return project
+	}
+
+	// 4. Environment variable (lowest priority, for backwards compatibility)
+	return os.Getenv("DEVHIVE_PROJECT")
+}
+
+// findDevhiveFile searches for .devhive file from current directory up to root
+func findDevhiveFile() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	dir := cwd
+	for {
+		devhiveFile := filepath.Join(dir, ".devhive")
+		if data, err := os.ReadFile(devhiveFile); err == nil {
+			// Trim whitespace and newlines
+			project := strings.TrimSpace(string(data))
+			// Safety: only use basename (no path traversal)
+			project = filepath.Base(project)
+			if project != "" && project != "." && project != ".." {
+				return project
+			}
+		}
+
+		// Move to parent directory
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached root
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// detectFromPath detects project name if cwd is under ~/.devhive/projects/<name>/
+func detectFromPath() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	projectsDir := filepath.Join(home, ".devhive", "projects")
+
+	// Check if cwd is under projectsDir
+	rel, err := filepath.Rel(projectsDir, cwd)
+	if err != nil {
+		return ""
+	}
+
+	// If relative path starts with "..", we're not under projectsDir
+	if len(rel) >= 2 && rel[:2] == ".." {
+		return ""
+	}
+
+	// Extract first component (project name)
+	// Split by path separator
+	parts := splitPath(rel)
+	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
+		return parts[0]
+	}
+	return ""
+}
+
+// splitPath splits a path into components using filepath separator
+func splitPath(path string) []string {
+	if path == "" || path == "." {
+		return nil
+	}
+
+	var parts []string
+	current := filepath.Clean(path)
+
+	for current != "" && current != "." && current != "/" {
+		dir, file := filepath.Split(current)
+		if file != "" {
+			parts = append([]string{file}, parts...)
+		}
+		// Remove trailing separator from dir
+		current = filepath.Clean(dir)
+		if current == "." {
+			break
+		}
+	}
+	return parts
+}
+
 // DefaultDBPath returns the default database path
-// If ProjectName is set, returns ~/.devhive/projects/<project>/state.db
-// Otherwise returns ~/.devhive/state.db
+// Uses DetectProject() to determine the project
 func DefaultDBPath() string {
 	home, _ := os.UserHomeDir()
-
-	// Check ProjectName (set by CLI flag)
-	project := ProjectName
-	if project == "" {
-		// Fall back to environment variable
-		project = os.Getenv("DEVHIVE_PROJECT")
-	}
+	project := DetectProject()
 
 	if project != "" {
 		return filepath.Join(home, ".devhive", "projects", project, "state.db")
@@ -39,10 +143,7 @@ func DefaultDBPath() string {
 
 // GetProjectName returns the current project name
 func GetProjectName() string {
-	if ProjectName != "" {
-		return ProjectName
-	}
-	return os.Getenv("DEVHIVE_PROJECT")
+	return DetectProject()
 }
 
 // DB wraps the database connection
@@ -62,10 +163,14 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
+	conn, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Enable WAL mode for better concurrent access
+	conn.Exec("PRAGMA journal_mode=WAL")
+	conn.Exec("PRAGMA busy_timeout=5000")
 
 	db := &DB{conn: conn}
 	if err := db.init(); err != nil {
@@ -78,7 +183,58 @@ func Open(path string) (*DB, error) {
 
 func (db *DB) init() error {
 	_, err := db.conn.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	// Run migrations for existing databases
+	return db.migrate()
+}
+
+// migrate handles schema migrations for existing databases
+func (db *DB) migrate() error {
+	// Migration: Add session_state column to workers if not exists
+	if !db.columnExists("workers", "session_state") {
+		_, err := db.conn.Exec(`
+			ALTER TABLE workers ADD COLUMN session_state TEXT DEFAULT 'stopped'
+			CHECK(session_state IN ('running', 'waiting_permission', 'idle', 'stopped'))
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to add session_state column: %w", err)
+		}
+	}
+
+	// Migration: Add args column to roles if not exists
+	if !db.columnExists("roles", "args") {
+		_, err := db.conn.Exec(`ALTER TABLE roles ADD COLUMN args TEXT`)
+		if err != nil {
+			return fmt.Errorf("failed to add args column: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// columnExists checks if a column exists in a table
+func (db *DB) columnExists(table, column string) bool {
+	rows, err := db.conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue *string
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
 }
 
 // Close closes the database
@@ -95,6 +251,7 @@ type Role struct {
 	Name        string
 	Description string
 	RoleFile    string
+	Args        string
 	CreatedAt   time.Time
 }
 
@@ -116,7 +273,8 @@ type Worker struct {
 	RoleName       string // FK to roles.name
 	RoleFile       string // From joined roles table
 	WorktreePath   string
-	Status         string
+	Status         string // pending/working/completed/blocked/error
+	SessionState   string // running/waiting_permission/idle/stopped
 	CurrentTask    string
 	LastCommit     string
 	ErrorCount     int
@@ -186,10 +344,10 @@ func checkRowsAffected(result sql.Result, entityType, name string) error {
 // ============================================
 
 // CreateRole creates a new role
-func (db *DB) CreateRole(name, description, roleFile string) error {
+func (db *DB) CreateRole(name, description, roleFile, args string) error {
 	_, err := db.conn.Exec(
-		"INSERT INTO roles (name, description, role_file) VALUES (?, ?, ?)",
-		name, nullString(description), nullString(roleFile),
+		"INSERT INTO roles (name, description, role_file, args) VALUES (?, ?, ?, ?)",
+		name, nullString(description), nullString(roleFile), nullString(args),
 	)
 	return err
 }
@@ -197,12 +355,12 @@ func (db *DB) CreateRole(name, description, roleFile string) error {
 // GetRole returns a role by name
 func (db *DB) GetRole(name string) (*Role, error) {
 	row := db.conn.QueryRow(`
-		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), created_at
+		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), COALESCE(args, ''), created_at
 		FROM roles WHERE name = ?
 	`, name)
 
 	var r Role
-	err := row.Scan(&r.Name, &r.Description, &r.RoleFile, &r.CreatedAt)
+	err := row.Scan(&r.Name, &r.Description, &r.RoleFile, &r.Args, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -215,7 +373,7 @@ func (db *DB) GetRole(name string) (*Role, error) {
 // GetAllRoles returns all roles
 func (db *DB) GetAllRoles() ([]Role, error) {
 	rows, err := db.conn.Query(`
-		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), created_at
+		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), COALESCE(args, ''), created_at
 		FROM roles ORDER BY name
 	`)
 	if err != nil {
@@ -226,7 +384,7 @@ func (db *DB) GetAllRoles() ([]Role, error) {
 	var roles []Role
 	for rows.Next() {
 		var r Role
-		err := rows.Scan(&r.Name, &r.Description, &r.RoleFile, &r.CreatedAt)
+		err := rows.Scan(&r.Name, &r.Description, &r.RoleFile, &r.Args, &r.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -236,10 +394,10 @@ func (db *DB) GetAllRoles() ([]Role, error) {
 }
 
 // UpdateRole updates a role
-func (db *DB) UpdateRole(name, description, roleFile string) error {
+func (db *DB) UpdateRole(name, description, roleFile, args string) error {
 	result, err := db.conn.Exec(`
-		UPDATE roles SET description = ?, role_file = ? WHERE name = ?
-	`, nullString(description), nullString(roleFile), name)
+		UPDATE roles SET description = ?, role_file = ?, args = ? WHERE name = ?
+	`, nullString(description), nullString(roleFile), nullString(args), name)
 	if err != nil {
 		return err
 	}
@@ -337,16 +495,17 @@ func (db *DB) CompleteSprint() (string, error) {
 // workerSelectColumns defines the standard columns for worker queries
 const workerSelectColumns = `
 	w.name, w.sprint_id, w.branch, COALESCE(w.role_name, ''), COALESCE(r.role_file, ''),
-	COALESCE(w.worktree_path, ''), w.status, COALESCE(w.current_task, ''),
-	COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
+	COALESCE(w.worktree_path, ''), w.status, COALESCE(w.session_state, 'stopped'),
+	COALESCE(w.current_task, ''), COALESCE(w.last_commit, ''), w.error_count,
+	COALESCE(w.last_error, ''), w.updated_at,
 	(SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL)`
 
 // scanWorker scans a worker row into a Worker struct
 func scanWorker(scanner interface{ Scan(...interface{}) error }) (Worker, error) {
 	var w Worker
 	err := scanner.Scan(&w.Name, &w.SprintID, &w.Branch, &w.RoleName, &w.RoleFile,
-		&w.WorktreePath, &w.Status, &w.CurrentTask, &w.LastCommit, &w.ErrorCount,
-		&w.LastError, &w.UpdatedAt, &w.UnreadMessages)
+		&w.WorktreePath, &w.Status, &w.SessionState, &w.CurrentTask, &w.LastCommit,
+		&w.ErrorCount, &w.LastError, &w.UpdatedAt, &w.UnreadMessages)
 	return w, err
 }
 
@@ -436,6 +595,21 @@ func (db *DB) ReportWorkerError(name, message string) error {
 		return err
 	}
 	return db.logEvent("worker_error", name, map[string]interface{}{"message": message})
+}
+
+// UpdateWorkerSessionState updates the session state of a worker
+func (db *DB) UpdateWorkerSessionState(name, sessionState string) error {
+	result, err := db.conn.Exec(
+		"UPDATE workers SET session_state = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+		sessionState, name,
+	)
+	if err != nil {
+		return err
+	}
+	if err := checkRowsAffected(result, "worker", name); err != nil {
+		return err
+	}
+	return db.logEvent("worker_session_changed", name, map[string]interface{}{"session_state": sessionState})
 }
 
 // GetWorker returns a worker by name
@@ -674,4 +848,68 @@ func (db *DB) GetLastEventID() (int, error) {
 	var id int
 	err := db.conn.QueryRow("SELECT COALESCE(MAX(id), 0) FROM events").Scan(&id)
 	return id, err
+}
+
+// ============================================
+// Cleanup Operations
+// ============================================
+
+// CleanupOldEvents removes events older than N days
+// If dryRun is true, returns count without deleting
+func (db *DB) CleanupOldEvents(days int, dryRun bool) (int, error) {
+	// Count events to be deleted
+	var count int
+	err := db.conn.QueryRow(`
+		SELECT COUNT(*) FROM events
+		WHERE created_at < datetime('now', '-' || ? || ' days')
+	`, days).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	if dryRun {
+		return count, nil
+	}
+
+	// Delete old events
+	_, err = db.conn.Exec(`
+		DELETE FROM events
+		WHERE created_at < datetime('now', '-' || ? || ' days')
+	`, days)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+// CleanupOldMessages removes read messages older than N days
+// If dryRun is true, returns count without deleting
+func (db *DB) CleanupOldMessages(days int, dryRun bool) (int, error) {
+	// Count messages to be deleted (only read messages)
+	var count int
+	err := db.conn.QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE read_at IS NOT NULL
+		AND read_at < datetime('now', '-' || ? || ' days')
+	`, days).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	if dryRun {
+		return count, nil
+	}
+
+	// Delete old read messages
+	_, err = db.conn.Exec(`
+		DELETE FROM messages
+		WHERE read_at IS NOT NULL
+		AND read_at < datetime('now', '-' || ? || ' days')
+	`, days)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
