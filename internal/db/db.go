@@ -15,10 +15,34 @@ import (
 //go:embed schema.sql
 var schema string
 
+// ProjectName is set by the CLI via --project flag or DEVHIVE_PROJECT env var
+var ProjectName string
+
 // DefaultDBPath returns the default database path
+// If ProjectName is set, returns ~/.devhive/projects/<project>/state.db
+// Otherwise returns ~/.devhive/state.db
 func DefaultDBPath() string {
 	home, _ := os.UserHomeDir()
+
+	// Check ProjectName (set by CLI flag)
+	project := ProjectName
+	if project == "" {
+		// Fall back to environment variable
+		project = os.Getenv("DEVHIVE_PROJECT")
+	}
+
+	if project != "" {
+		return filepath.Join(home, ".devhive", "projects", project, "state.db")
+	}
 	return filepath.Join(home, ".devhive", "state.db")
+}
+
+// GetProjectName returns the current project name
+func GetProjectName() string {
+	if ProjectName != "" {
+		return ProjectName
+	}
+	return os.Getenv("DEVHIVE_PROJECT")
 }
 
 // DB wraps the database connection

@@ -14,6 +14,7 @@ import (
 )
 
 var database *db.DB
+var projectFlag string
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -25,6 +26,12 @@ func main() {
 			if cmd.Name() == "version" {
 				return nil
 			}
+
+			// Set project name from flag (takes precedence over env var)
+			if projectFlag != "" {
+				db.ProjectName = projectFlag
+			}
+
 			var err error
 			database, err = db.Open("")
 			return err
@@ -35,6 +42,9 @@ func main() {
 			}
 		},
 	}
+
+	// Global flags
+	rootCmd.PersistentFlags().StringVarP(&projectFlag, "project", "P", "", "Project name (or set DEVHIVE_PROJECT)")
 
 	// Add commands
 	rootCmd.AddCommand(versionCmd())
@@ -131,6 +141,7 @@ func statusCmd() *cobra.Command {
 
 			if jsonOutput {
 				output := map[string]interface{}{
+					"project": db.GetProjectName(),
 					"sprint":  sprint,
 					"workers": workers,
 				}
@@ -139,6 +150,10 @@ func statusCmd() *cobra.Command {
 				return nil
 			}
 
+			// Show project name if set
+			if project := db.GetProjectName(); project != "" {
+				fmt.Printf("Project: %s\n", project)
+			}
 			fmt.Printf("Sprint: %s (started: %s)\n\n", sprint.ID, sprint.StartedAt.Format("2006-01-02 15:04"))
 
 			if len(workers) == 0 {

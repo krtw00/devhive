@@ -231,7 +231,24 @@ devhive
 
 | 変数名 | 説明 | 例 |
 |--------|------|-----|
+| DEVHIVE_PROJECT | プロジェクト名（DB分離用） | duel-log-app |
 | DEVHIVE_WORKER | デフォルトのワーカー名 | security |
+
+#### プロジェクト指定
+
+プロジェクトを指定すると、DBが `~/.devhive/projects/<project>/state.db` に分離される:
+
+```bash
+# 方法1: 環境変数
+export DEVHIVE_PROJECT=duel-log-app
+devhive init sprint-01
+
+# 方法2: --project フラグ（-P）
+devhive --project duel-log-app init sprint-01
+devhive -P duel-log-app status
+```
+
+#### ワーカー名省略
 
 環境変数を設定すると、コマンドでワーカー名を省略できる:
 
@@ -362,10 +379,49 @@ devhive/
 │   ├── design.md            # 本ドキュメント
 │   └── commands.md          # コマンドリファレンス
 ├── scripts/                 # 連携スクリプト（オプション）
+├── templates/               # CLAUDE.mdテンプレート
 ├── go.mod
 ├── go.sum
 ├── README.md
 └── .gitignore
+```
+
+### 8.2 運用時のディレクトリ構成
+
+プロジェクト固有の設定はホームディレクトリに配置:
+
+```
+~/.devhive/
+├── state.db                 # グローバルDB（プロジェクト未指定時）
+└── projects/
+    └── <project-name>/
+        ├── state.db         # プロジェクト専用DB
+        ├── roles/           # ロール定義ファイル
+        │   ├── frontend.md
+        │   └── backend.md
+        ├── templates/       # CLAUDE.mdテンプレート
+        │   └── CLAUDE.md
+        ├── sprints/         # スプリント設定
+        │   └── sprint-01.conf
+        └── worktrees/       # Git Worktree配置場所
+```
+
+### 8.3 推奨セットアップ手順
+
+```bash
+# 1. devhiveをインストール
+go build -o devhive ./cmd/devhive
+ln -s $(pwd)/devhive ~/bin/devhive
+export PATH="$HOME/bin:$PATH"
+
+# 2. プロジェクト設定ディレクトリを作成
+mkdir -p ~/.devhive/projects/my-project/{roles,templates,sprints,worktrees}
+
+# 3. 環境変数を設定（.bashrcなどに追加）
+export DEVHIVE_PROJECT=my-project
+
+# 4. スプリント開始
+devhive init sprint-01
 ```
 
 ## 9. 技術スタック
