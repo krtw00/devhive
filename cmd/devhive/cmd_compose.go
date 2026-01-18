@@ -187,8 +187,15 @@ func downCmd() *cobra.Command {
 
 Examples:
   devhive down                  # Complete all workers
-  devhive down perf-fe perf-be  # Complete specific workers`,
+  devhive down perf-fe perf-be  # Complete specific workers
+  devhive down --clean          # Complete and remove worktrees/branches
+  devhive down --sprint         # Complete workers and sprint`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			clean, _ := cmd.Flags().GetBool("clean")
+			completeSprint, _ := cmd.Flags().GetBool("sprint")
+
+			var completedWorkers []string
+
 			// If specific workers provided, complete them
 			if len(args) > 0 {
 				for _, name := range args {
@@ -196,32 +203,32 @@ Examples:
 						fmt.Printf("⚠ Failed to complete %s: %v\n", name, err)
 					} else {
 						fmt.Printf("✓ Worker '%s' completed\n", name)
+						completedWorkers = append(completedWorkers, name)
 					}
 				}
-				return nil
-			}
-
-			// Complete all workers in active sprint
-			workers, err := database.GetAllWorkers()
-			if err != nil {
-				return err
-			}
-
-			if len(workers) == 0 {
-				fmt.Println("No workers to complete")
-				return nil
-			}
-
-			completeSprint, _ := cmd.Flags().GetBool("sprint")
-
-			for _, w := range workers {
-				if w.Status == "completed" {
-					continue
+			} else {
+				// Complete all workers in active sprint
+				workers, err := database.GetAllWorkers()
+				if err != nil {
+					return err
 				}
-				if err := database.UpdateWorkerStatus(w.Name, "completed", nil); err != nil {
-					fmt.Printf("⚠ Failed to complete %s: %v\n", w.Name, err)
-				} else {
-					fmt.Printf("✓ Worker '%s' completed\n", w.Name)
+
+				if len(workers) == 0 {
+					fmt.Println("No workers to complete")
+					return nil
+				}
+
+				for _, w := range workers {
+					if w.Status == "completed" {
+						completedWorkers = append(completedWorkers, w.Name)
+						continue
+					}
+					if err := database.UpdateWorkerStatus(w.Name, "completed", nil); err != nil {
+						fmt.Printf("⚠ Failed to complete %s: %v\n", w.Name, err)
+					} else {
+						fmt.Printf("✓ Worker '%s' completed\n", w.Name)
+						completedWorkers = append(completedWorkers, w.Name)
+					}
 				}
 			}
 
@@ -234,11 +241,18 @@ Examples:
 				fmt.Printf("✓ Sprint '%s' completed\n", sprintID)
 			}
 
+			// Clean up worktrees and branches if requested
+			if clean && len(completedWorkers) > 0 {
+				fmt.Println("\nCleaning up worktrees and branches...")
+				cleanupWorkers(completedWorkers)
+			}
+
 			return nil
 		},
 	}
 
 	cmd.Flags().Bool("sprint", false, "Also complete the sprint")
+	cmd.Flags().Bool("clean", false, "Also remove worktrees and branches")
 
 	return cmd
 }

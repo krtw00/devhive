@@ -239,6 +239,42 @@ Examples:
 	return cmd
 }
 
+// cleanupWorkers removes worktrees and branches for specified workers
+func cleanupWorkers(workerNames []string) {
+	cwd, _ := os.Getwd()
+
+	// Load config to get branch info
+	var config *ComposeConfig
+	configFile, _ := FindComposeFile()
+	if configFile != "" {
+		config, _ = LoadComposeFile(configFile)
+	}
+
+	for _, name := range workerNames {
+		// Derive worktree path from convention
+		worktreePath := filepath.Join(".devhive", "worktrees", name)
+		if _, err := os.Stat(worktreePath); err == nil {
+			fmt.Printf("  Removing worktree: %s\n", worktreePath)
+			runGit(cwd, "worktree", "remove", worktreePath, "--force")
+		}
+
+		// Delete branch (only if merged)
+		if config != nil {
+			if workerConfig, ok := config.Workers[name]; ok && workerConfig.Branch != "" {
+				fmt.Printf("  Deleting branch: %s\n", workerConfig.Branch)
+				runGit(cwd, "branch", "-d", workerConfig.Branch) // -d fails if not merged
+			}
+		}
+
+		// Remove from database
+		if err := database.DeleteWorker(name); err != nil {
+			fmt.Printf("  ⚠ Failed to remove %s from DB: %v\n", name, err)
+		} else {
+			fmt.Printf("  ✓ Cleaned %s\n", name)
+		}
+	}
+}
+
 // noteCmd adds a note to worker's markdown file
 func noteCmd() *cobra.Command {
 	return &cobra.Command{
