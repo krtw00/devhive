@@ -33,7 +33,14 @@ INSERT OR IGNORE INTO message_types (name, description) VALUES
     ('warning', 'Warning message'),
     ('question', 'Question requiring response'),
     ('answer', 'Answer to a question'),
-    ('system', 'System notification');
+    ('system', 'System notification'),
+    ('help', 'Help request'),
+    ('review', 'Review request'),
+    ('unblock', 'Unblock request'),
+    ('clarify', 'Clarification request'),
+    ('report', 'Progress report'),
+    ('reply', 'Reply message'),
+    ('broadcast', 'Broadcast message');
 
 -- Insert default event types
 INSERT OR IGNORE INTO event_types (name, description) VALUES
@@ -47,7 +54,8 @@ INSERT OR IGNORE INTO event_types (name, description) VALUES
     ('worker_progress_updated', 'Worker progress was updated'),
     ('worker_error', 'Worker reported an error'),
     ('message_sent', 'Message was sent'),
-    ('message_broadcast', 'Message was broadcast');
+    ('message_broadcast', 'Message was broadcast'),
+    ('branch_merged', 'Branch was merged');
 
 -- ============================================
 -- Core Tables
@@ -84,6 +92,7 @@ CREATE TABLE IF NOT EXISTS workers (
 );
 
 -- Messages table
+-- Note: from_worker and to_worker do not have FK constraints to allow "pm" as sender/recipient
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_worker TEXT NOT NULL,
@@ -93,7 +102,6 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     read_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (to_worker) REFERENCES workers(name) ON DELETE CASCADE,
     FOREIGN KEY (message_type) REFERENCES message_types(name) ON DELETE RESTRICT
 );
 

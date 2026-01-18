@@ -51,19 +51,34 @@ workers:
 
 ```
 devhive
-├── init [name]         # プロジェクト初期化
-├── up [worker...]      # ワーカー起動（worktree自動作成）
-├── down [worker...]    # ワーカー停止
-├── ps                  # ワーカー一覧
-├── start <worker>      # 特定ワーカー開始
-├── stop <worker>       # 特定ワーカー停止
-├── logs [worker]       # ログ表示
-├── rm <worker>         # ワーカー削除
-├── exec <worker> <cmd> # コマンド実行
-├── roles               # ロール一覧
-├── config              # 設定表示
-├── session <state>     # セッション状態更新（Hooks用）
-└── version             # バージョン表示
+├── init [name]           # プロジェクト初期化
+├── up [worker...]        # ワーカー起動（worktree自動作成）
+├── down [worker...]      # ワーカー停止
+├── ps                    # ワーカー一覧
+├── status                # 全体サマリー
+├── start <worker>        # 特定ワーカー開始
+├── stop <worker>         # 特定ワーカー停止
+├── logs [worker]         # ログ表示
+├── rm <worker>           # ワーカー削除
+├── exec <worker> <cmd>   # コマンド実行
+├── roles                 # ロール一覧
+├── config                # 設定表示
+│
+├── progress <w> <0-100>  # 進捗更新
+├── merge <w> <branch>    # ブランチマージ
+├── diff [worker]         # 変更差分表示
+├── note <w> "msg"        # メモ追記
+├── clean                 # 完了済み削除
+│
+├── request <type> [msg]  # PM にリクエスト
+├── report "msg"          # PM に進捗報告
+├── msgs                  # 自分宛メッセージ
+├── inbox                 # PM受信箱
+├── reply <w> "msg"       # ワーカーに返信
+├── broadcast "msg"       # 全員に送信
+│
+├── session <state>       # セッション状態（Hooks用）
+└── version               # バージョン表示
 ```
 
 ## 6. データモデル

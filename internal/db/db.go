@@ -211,6 +211,20 @@ func (db *DB) migrate() error {
 		}
 	}
 
+	// Migration: Add new message types for communication commands
+	db.conn.Exec(`INSERT OR IGNORE INTO message_types (name, description) VALUES
+		('help', 'Help request'),
+		('review', 'Review request'),
+		('unblock', 'Unblock request'),
+		('clarify', 'Clarification request'),
+		('report', 'Progress report'),
+		('reply', 'Reply message'),
+		('broadcast', 'Broadcast message')`)
+
+	// Migration: Add branch_merged event type
+	db.conn.Exec(`INSERT OR IGNORE INTO event_types (name, description) VALUES
+		('branch_merged', 'Branch was merged')`)
+
 	return nil
 }
 
@@ -317,7 +331,7 @@ func nullString(s string) *string {
 	return &s
 }
 
-// logEvent logs an event
+// logEvent logs an event (internal)
 func (db *DB) logEvent(eventType, worker string, data map[string]interface{}) error {
 	var dataJSON *string
 	if data != nil {
@@ -328,6 +342,15 @@ func (db *DB) logEvent(eventType, worker string, data map[string]interface{}) er
 	_, err := db.conn.Exec(
 		"INSERT INTO events (event_type, worker, data) VALUES (?, ?, ?)",
 		eventType, nullString(worker), dataJSON,
+	)
+	return err
+}
+
+// LogEvent logs an event with JSON string data (public)
+func (db *DB) LogEvent(eventType, worker, dataJSON string) error {
+	_, err := db.conn.Exec(
+		"INSERT INTO events (event_type, worker, data) VALUES (?, ?, ?)",
+		eventType, nullString(worker), nullString(dataJSON),
 	)
 	return err
 }

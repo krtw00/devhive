@@ -96,15 +96,37 @@ workers:
 
 ## コマンド一覧
 
+### 基本操作
+
 | コマンド | 説明 |
 |----------|------|
 | `devhive init [-t]` | 初期化（-t: テンプレート作成） |
 | `devhive up` | ワーカー起動 |
 | `devhive down` | ワーカー停止 |
 | `devhive ps` | ワーカー一覧 |
+| `devhive status` | 全体サマリー |
 | `devhive logs [-f]` | ログ表示 |
-| `devhive exec <w> <cmd>` | コマンド実行 |
-| `devhive roles [-b]` | ロール一覧 |
+
+### ユーティリティ
+
+| コマンド | 説明 |
+|----------|------|
+| `devhive progress <w> <0-100>` | 進捗更新 |
+| `devhive merge <w> <branch>` | ブランチマージ |
+| `devhive diff [w]` | 変更差分表示 |
+| `devhive note <w> "msg"` | メモ追記 |
+| `devhive clean [--all]` | 完了済み削除 |
+
+### 通信（ワーカー↔PM）
+
+| コマンド | 説明 |
+|----------|------|
+| `devhive request <type> [msg]` | PM にリクエスト（help/review/unblock/clarify） |
+| `devhive report "msg"` | PM に進捗報告 |
+| `devhive msgs` | 自分宛メッセージ表示 |
+| `devhive inbox` | PM受信箱 |
+| `devhive reply <w> "msg"` | ワーカーに返信 |
+| `devhive broadcast "msg"` | 全員に送信 |
 
 ## 組み込みロール
 

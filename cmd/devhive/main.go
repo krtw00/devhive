@@ -65,6 +65,22 @@ Quick Start:
 	rootCmd.AddCommand(rolesCmd())
 	rootCmd.AddCommand(configCmd())
 
+	// Utility commands
+	rootCmd.AddCommand(mergeCmd())
+	rootCmd.AddCommand(progressCmd())
+	rootCmd.AddCommand(cleanCmd())
+	rootCmd.AddCommand(noteCmd())
+	rootCmd.AddCommand(diffCmd())
+	rootCmd.AddCommand(statusCmd())
+
+	// Communication commands
+	rootCmd.AddCommand(requestCmd())  // Worker -> PM
+	rootCmd.AddCommand(reportCmd())   // Worker -> PM
+	rootCmd.AddCommand(msgsCmd())     // Worker inbox
+	rootCmd.AddCommand(inboxCmd())    // PM inbox
+	rootCmd.AddCommand(replyCmd())    // PM -> Worker
+	rootCmd.AddCommand(broadcastCmd()) // PM -> All
+
 	// Internal commands (for hooks)
 	rootCmd.AddCommand(sessionCmd())
 
