@@ -95,8 +95,11 @@ Examples:
 			fmt.Println("\nDone! Next steps:")
 			if !createTemplate {
 				fmt.Println("  1. Create .devhive.yaml with your worker definitions")
+				fmt.Println("  2. Run 'devhive up' to start workers")
+			} else {
+				fmt.Println("  1. Edit .devhive.yaml to define your workers")
+				fmt.Println("  2. Run 'devhive up' to start workers")
 			}
-			fmt.Println("  2. Run 'devhive up' to start workers")
 
 			return nil
 		},
