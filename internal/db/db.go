@@ -19,30 +19,34 @@ var schema string
 // ProjectName is set by the CLI via --project flag
 var ProjectName string
 
-// DetectProject detects the project name from various sources
-// Priority: 1. Flag, 2. .devhive file, 3. Path detection, 4. Env var
+// DetectProject detects the project name
+// Priority: 1. Flag, 2. .devhive.yaml project field, 3. directory name
 func DetectProject() string {
 	// 1. Explicit flag (highest priority)
 	if ProjectName != "" {
 		return ProjectName
 	}
 
-	// 2. .devhive file (search from cwd up to root)
-	if project := findDevhiveFile(); project != "" {
+	// 2. .devhive.yaml project field
+	if project := findComposeProject(); project != "" {
 		return project
 	}
 
-	// 3. Path detection (~/.devhive/projects/<name>/...)
-	if project := detectFromPath(); project != "" {
-		return project
+	// 3. Use project root directory name
+	if root := findProjectRoot(); root != "" {
+		return filepath.Base(root)
 	}
 
-	// 4. Environment variable (lowest priority, for backwards compatibility)
-	return os.Getenv("DEVHIVE_PROJECT")
+	// 4. Fallback to current directory name
+	cwd, _ := os.Getwd()
+	return filepath.Base(cwd)
 }
 
-// findDevhiveFile searches for .devhive file from current directory up to root
-func findDevhiveFile() string {
+// composeFiles are the filenames to search for
+var composeFiles = []string{".devhive.yaml", ".devhive.yml", "devhive.yaml", "devhive.yml"}
+
+// findComposeProject searches for .devhive.yaml and extracts the project name
+func findComposeProject() string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
@@ -50,21 +54,29 @@ func findDevhiveFile() string {
 
 	dir := cwd
 	for {
-		devhiveFile := filepath.Join(dir, ".devhive")
-		if data, err := os.ReadFile(devhiveFile); err == nil {
-			// Trim whitespace and newlines
-			project := strings.TrimSpace(string(data))
-			// Safety: only use basename (no path traversal)
-			project = filepath.Base(project)
-			if project != "" && project != "." && project != ".." {
-				return project
+		for _, filename := range composeFiles {
+			configFile := filepath.Join(dir, filename)
+			if data, err := os.ReadFile(configFile); err == nil {
+				// Simple YAML parsing for project field
+				for _, line := range strings.Split(string(data), "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "project:") {
+						project := strings.TrimSpace(strings.TrimPrefix(line, "project:"))
+						// Remove quotes if present
+						project = strings.Trim(project, "\"'")
+						if project != "" {
+							return project
+						}
+					}
+				}
+				// Config found but no project field - use directory name
+				return filepath.Base(dir)
 			}
 		}
 
 		// Move to parent directory
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// Reached root
 			break
 		}
 		dir = parent
@@ -72,73 +84,45 @@ func findDevhiveFile() string {
 	return ""
 }
 
-// detectFromPath detects project name if cwd is under ~/.devhive/projects/<name>/
-func detectFromPath() string {
+
+
+// DefaultDBPath returns the default database path
+// DB is stored in <project>/.devhive/devhive.db
+func DefaultDBPath() string {
+	// Find project root (where .devhive.yaml is)
+	projectRoot := findProjectRoot()
+	if projectRoot != "" {
+		return filepath.Join(projectRoot, ".devhive", "devhive.db")
+	}
+
+	// Fallback: use current directory
+	cwd, _ := os.Getwd()
+	return filepath.Join(cwd, ".devhive", "devhive.db")
+}
+
+// findProjectRoot finds the directory containing .devhive.yaml
+func findProjectRoot() string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-
-	projectsDir := filepath.Join(home, ".devhive", "projects")
-
-	// Check if cwd is under projectsDir
-	rel, err := filepath.Rel(projectsDir, cwd)
-	if err != nil {
-		return ""
-	}
-
-	// If relative path starts with "..", we're not under projectsDir
-	if len(rel) >= 2 && rel[:2] == ".." {
-		return ""
-	}
-
-	// Extract first component (project name)
-	// Split by path separator
-	parts := splitPath(rel)
-	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
-		return parts[0]
-	}
-	return ""
-}
-
-// splitPath splits a path into components using filepath separator
-func splitPath(path string) []string {
-	if path == "" || path == "." {
-		return nil
-	}
-
-	var parts []string
-	current := filepath.Clean(path)
-
-	for current != "" && current != "." && current != "/" {
-		dir, file := filepath.Split(current)
-		if file != "" {
-			parts = append([]string{file}, parts...)
+	dir := cwd
+	for {
+		for _, filename := range composeFiles {
+			configFile := filepath.Join(dir, filename)
+			if _, err := os.Stat(configFile); err == nil {
+				return dir
+			}
 		}
-		// Remove trailing separator from dir
-		current = filepath.Clean(dir)
-		if current == "." {
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
 			break
 		}
+		dir = parent
 	}
-	return parts
-}
-
-// DefaultDBPath returns the default database path
-// Uses DetectProject() to determine the project
-func DefaultDBPath() string {
-	home, _ := os.UserHomeDir()
-	project := DetectProject()
-
-	if project != "" {
-		return filepath.Join(home, ".devhive", "projects", project, "state.db")
-	}
-	return filepath.Join(home, ".devhive", "state.db")
+	return ""
 }
 
 // GetProjectName returns the current project name
@@ -211,6 +195,22 @@ func (db *DB) migrate() error {
 		}
 	}
 
+	// Migration: Add progress column to workers if not exists
+	if !db.columnExists("workers", "progress") {
+		_, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN progress INTEGER DEFAULT 0`)
+		if err != nil {
+			return fmt.Errorf("failed to add progress column: %w", err)
+		}
+	}
+
+	// Migration: Add activity column to workers if not exists
+	if !db.columnExists("workers", "activity") {
+		_, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN activity TEXT`)
+		if err != nil {
+			return fmt.Errorf("failed to add activity column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -276,6 +276,8 @@ type Worker struct {
 	Status         string // pending/working/completed/blocked/error
 	SessionState   string // running/waiting_permission/idle/stopped
 	CurrentTask    string
+	Progress       int    // 0-100 progress percentage
+	Activity       string // Current activity description
 	LastCommit     string
 	ErrorCount     int
 	LastError      string
@@ -496,16 +498,16 @@ func (db *DB) CompleteSprint() (string, error) {
 const workerSelectColumns = `
 	w.name, w.sprint_id, w.branch, COALESCE(w.role_name, ''), COALESCE(r.role_file, ''),
 	COALESCE(w.worktree_path, ''), w.status, COALESCE(w.session_state, 'stopped'),
-	COALESCE(w.current_task, ''), COALESCE(w.last_commit, ''), w.error_count,
-	COALESCE(w.last_error, ''), w.updated_at,
+	COALESCE(w.current_task, ''), COALESCE(w.progress, 0), COALESCE(w.activity, ''),
+	COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
 	(SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL)`
 
 // scanWorker scans a worker row into a Worker struct
 func scanWorker(scanner interface{ Scan(...interface{}) error }) (Worker, error) {
 	var w Worker
 	err := scanner.Scan(&w.Name, &w.SprintID, &w.Branch, &w.RoleName, &w.RoleFile,
-		&w.WorktreePath, &w.Status, &w.SessionState, &w.CurrentTask, &w.LastCommit,
-		&w.ErrorCount, &w.LastError, &w.UpdatedAt, &w.UnreadMessages)
+		&w.WorktreePath, &w.Status, &w.SessionState, &w.CurrentTask, &w.Progress, &w.Activity,
+		&w.LastCommit, &w.ErrorCount, &w.LastError, &w.UpdatedAt, &w.UnreadMessages)
 	return w, err
 }
 
@@ -612,6 +614,24 @@ func (db *DB) UpdateWorkerSessionState(name, sessionState string) error {
 	return db.logEvent("worker_session_changed", name, map[string]interface{}{"session_state": sessionState})
 }
 
+// UpdateWorkerProgress updates the progress and activity of a worker
+func (db *DB) UpdateWorkerProgress(name string, progress int, activity string) error {
+	if progress < 0 || progress > 100 {
+		return fmt.Errorf("progress must be between 0 and 100")
+	}
+	result, err := db.conn.Exec(
+		"UPDATE workers SET progress = ?, activity = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+		progress, nullString(activity), name,
+	)
+	if err != nil {
+		return err
+	}
+	if err := checkRowsAffected(result, "worker", name); err != nil {
+		return err
+	}
+	return db.logEvent("worker_progress_updated", name, map[string]interface{}{"progress": progress, "activity": activity})
+}
+
 // GetWorker returns a worker by name
 func (db *DB) GetWorker(name string) (*Worker, error) {
 	row := db.conn.QueryRow(`
@@ -654,6 +674,15 @@ func (db *DB) GetAllWorkers() ([]Worker, error) {
 		workers = append(workers, w)
 	}
 	return workers, nil
+}
+
+// DeleteWorker removes a worker from the database
+func (db *DB) DeleteWorker(name string) error {
+	result, err := db.conn.Exec("DELETE FROM workers WHERE name = ?", name)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result, "worker", name)
 }
 
 // GetAllWorkerNames returns all worker names for active sprint

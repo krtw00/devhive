@@ -1,567 +1,109 @@
-# DevHive 基本設計書
+# DevHive 設計書
 
 ## 1. 概要
 
-### 1.1 目的
+DevHiveは、Git Worktree + 複数のAIエージェント（Claude Code等）による並列開発の状態を一元管理するためのCLIツール。
 
-DevHiveは、Git Worktree + 複数のAIエージェント（Claude Code等）による並列開発の状態を一元管理するためのCLIツールである。
+## 2. 設計原則
 
-### 1.2 解決する課題
+1. **Docker風インターフェース**: `up`, `down`, `ps`, `logs` など直感的なコマンド
+2. **1ファイル設定**: `.devhive.yaml` で全て定義
+3. **自己完結**: プロジェクト内に全データ配置（グローバル設定不要）
+4. **高速起動**: Go製バイナリで即座に応答
 
-| 課題 | 従来の方法 | DevHiveでの解決 |
-|------|-----------|----------------|
-| 状態管理の分散 | alerts.log, shared-board.md等の複数ファイル | SQLite単一DB |
-| ワーカー間連携 | ファイル書き込み→手動確認 | メッセージシステム |
-| 監査・デバッグ | ログファイルのgrep | イベントログのクエリ |
-
-### 1.3 設計原則
-
-1. **Single Source of Truth**: 全状態をSQLiteで一元管理
-2. **高速起動**: Go製バイナリで即座に応答
-3. **シンプルなCLI**: 直感的なコマンド体系
-4. **環境非依存**: tmux/screen/複数ターミナル等、どの環境でも動作
-5. **最小限の機能**: 状態管理に専念、プロセス管理は外部に委譲
-6. **マスターDBなし**: プロジェクトごとに独立したDB、横断表示はスキャンで実現
-
-## 2. アーキテクチャ
-
-### 2.1 ハイブリッドアーキテクチャ
-
-DevHiveはコア機能（状態管理）に専念し、実行環境との連携はオプションとする。
+## 3. プロジェクト構成
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    DevHive Core CLI                      │
-│              (状態管理に専念・環境非依存)                 │
-├─────────────────────────────────────────────────────────┤
-│  Sprint │ Worker │ Message │ Events │ Watch             │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                    ┌────┴────┐
-                    │ SQLite  │
-                    │~/.devhive/state.db
-                    └────┬────┘
-                         │
-     ┌───────────────────┼───────────────────┐
-     │                   │                   │
-┌────┴────┐        ┌─────┴─────┐       ┌─────┴─────┐
-│  tmux   │        │ 複数      │       │ VS Code   │
-│ 連携    │        │ターミナル │       │ Tasks     │
-│スクリプト│        │ (手動)    │       │ (将来)    │
-└─────────┘        └───────────┘       └───────────┘
+myapp/
+├── .devhive.yaml    # 設定ファイル（git管理）
+├── .devhive.db      # 状態DB（gitignore）
+├── .worktrees/      # Git Worktrees（gitignore）
+│   ├── frontend/
+│   └── backend/
+└── src/
 ```
 
-### 2.2 並列開発環境での配置
+## 4. 設定ファイル
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 任意の実行環境（tmux / 複数ターミナル / etc）                     │
-├─────────────────┬─────────────────┬─────────────────┬───────────┤
-│    Worker 1     │    Worker 2     │    Worker 3     │  Senior   │
-│  (Claude Code)  │  (Claude Code)  │  (Claude Code)  │ Engineer  │
-│                 │                 │                 │           │
-│ DEVHIVE_WORKER  │ DEVHIVE_WORKER  │ DEVHIVE_WORKER  │           │
-│ =security       │ =quality        │ =mobile         │           │
-├─────────────────┴─────────────────┴─────────────────┴───────────┤
-│                                                                  │
-│  各環境から devhive コマンドを実行                               │
-│  → SQLiteに状態が記録される                                     │
-│  → 他の環境から状態を参照可能                                    │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    │  ~/.devhive/      │
-                    │   state.db        │
-                    │  (共有データベース) │
-                    └───────────────────┘
+```yaml
+version: "1"
+project: myapp
+
+defaults:
+  base_branch: develop
+
+workers:
+  frontend:
+    branch: feat/ui
+    role: "@frontend"
+    task: フロントエンド実装
+
+  backend:
+    branch: feat/api
+    role: "@backend"
+    task: API実装
 ```
 
-### 2.3 マルチプロジェクト構成
-
-複数のプロジェクトで同時に並列開発を行う場合の構成:
-
-```
-~/.devhive/
-├── state.db                     # グローバルDB（プロジェクト未指定時）
-└── projects/
-    ├── project-a/
-    │   └── state.db             # プロジェクトA専用
-    ├── project-b/
-    │   └── state.db             # プロジェクトB専用
-    └── project-c/
-        └── state.db             # プロジェクトC専用
-```
-
-#### 設計判断: マスターDBなし
-
-| 選択肢 | 採用 | 理由 |
-|--------|------|------|
-| マスターDB + プロジェクトDB | ❌ | 同期問題、複雑性 |
-| プロジェクトDBのみ | ✅ | シンプル、整合性保証 |
-
-横断的な表示（`devhive projects`）は、各プロジェクトDBをスキャンして集約:
-
-```
-devhive projects 実行時:
-  1. ~/.devhive/projects/*/state.db をスキャン
-  2. 各DBから sprint, workers を読み取り
-  3. 集約して表示
-```
-
-#### 並行アクセス対策
-
-SQLite WALモードを使用して、複数セッションからの同時アクセスに対応:
-
-```go
-// 接続時に設定
-db.Exec("PRAGMA journal_mode=WAL")
-db.Exec("PRAGMA busy_timeout=5000")
-```
-
-## 3. データモデル
-
-### 3.1 正規化スキーマ
-
-データベースは正規化されており、マスタテーブルとコアテーブルに分かれている。
-
-### 3.2 ER図
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ message_types   │     │     roles       │     │  event_types    │
-│    (マスタ)     │     │    (マスタ)     │     │    (マスタ)     │
-├─────────────────┤     ├─────────────────┤     ├─────────────────┤
-│ name (PK)       │     │ name (PK)       │     │ name (PK)       │
-│ description     │     │ description     │     │ description     │
-└────────┬────────┘     │ role_file       │     └────────┬────────┘
-         │              │ created_at      │              │
-         │ FK           └────────┬────────┘              │ FK
-         ▼                       │ FK                    ▼
-┌─────────────────┐     ┌────────┴────────┐     ┌─────────────────┐
-│    messages     │     │    workers      │     │     events      │
-├─────────────────┤     ├─────────────────┤     ├─────────────────┤
-│ id (PK)         │     │ name (PK)       │     │ id (PK)         │
-│ from_worker     │     │ sprint_id (FK)  │     │ event_type (FK) │
-│ to_worker (FK)──│────→│ branch          │     │ worker          │
-│ message_type(FK)│     │ role_name (FK)  │     │ data (JSON)     │
-│ subject         │     │ worktree_path   │     │ created_at      │
-│ content         │     │ status          │     └─────────────────┘
-│ read_at         │     │ current_task    │
-│ created_at      │     │ last_commit     │
-└─────────────────┘     │ error_count     │
-                        │ last_error      │
-┌─────────────────┐     │ updated_at      │
-│    sprints      │     └────────┬────────┘
-├─────────────────┤              │
-│ id (PK)         │←─────────────┘ FK
-│ config_file     │
-│ project_path    │
-│ status          │
-│ started_at      │
-│ completed_at    │
-└─────────────────┘
-```
-
-### 3.3 テーブル詳細
-
-#### マスタテーブル
-
-##### roles（ロール）
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| name | TEXT (PK) | ロール名（例: security） |
-| description | TEXT | ロールの説明 |
-| role_file | TEXT | ロール定義ファイルのパス |
-| args | TEXT | AIツール起動引数（例: --model sonnet） |
-| created_at | TIMESTAMP | 作成日時 |
-
-##### message_types（メッセージ種別）
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| name | TEXT (PK) | info/warning/question/answer/system |
-| description | TEXT | 種別の説明 |
-
-##### event_types（イベント種別）
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| name | TEXT (PK) | イベント種別名 |
-| description | TEXT | 種別の説明 |
-
-#### コアテーブル
-
-##### sprints（スプリント）
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| id | TEXT (PK) | スプリントID（例: sprint-04） |
-| config_file | TEXT | 設定ファイルパス |
-| project_path | TEXT | プロジェクトパス |
-| status | TEXT | active / completed / aborted |
-| started_at | TIMESTAMP | 開始日時 |
-| completed_at | TIMESTAMP | 完了日時 |
-
-##### workers（ワーカー）
-
-| カラム | 型 | 説明 | FK |
-|--------|-----|------|-----|
-| name | TEXT (PK) | ワーカー名 | - |
-| sprint_id | TEXT | 所属スプリント | sprints.id (CASCADE) |
-| branch | TEXT | 作業ブランチ | - |
-| role_name | TEXT | ロール名 | roles.name (SET NULL) |
-| worktree_path | TEXT | Worktreeパス | - |
-| status | TEXT | pending/working/completed/blocked/error | - |
-| session_state | TEXT | running/waiting_permission/idle/stopped | - |
-| current_task | TEXT | 現在のタスク説明 | - |
-| last_commit | TEXT | 最新コミットハッシュ | - |
-| error_count | INTEGER | エラー回数 | - |
-| last_error | TEXT | 最後のエラー内容 | - |
-| updated_at | TIMESTAMP | 更新日時 | - |
-
-##### session_state の意味
-
-| 状態 | アイコン | 説明 |
-|------|----------|------|
-| running | ▶ | セッションがアクティブに実行中 |
-| waiting_permission | ⏸ | ユーザーの権限確認待ち |
-| idle | ○ | セッションは開いているが待機中 |
-| stopped | ■ | セッション終了 |
-
-##### messages（メッセージ）
-
-| カラム | 型 | 説明 | FK |
-|--------|-----|------|-----|
-| id | INTEGER (PK) | メッセージID | - |
-| from_worker | TEXT | 送信元 | - |
-| to_worker | TEXT | 送信先 | workers.name (CASCADE) |
-| message_type | TEXT | メッセージ種別 | message_types.name (RESTRICT) |
-| subject | TEXT | 件名 | - |
-| content | TEXT | 本文 | - |
-| read_at | TIMESTAMP | 既読日時 | - |
-| created_at | TIMESTAMP | 送信日時 | - |
-
-##### events（イベントログ）
-
-| カラム | 型 | 説明 | FK |
-|--------|-----|------|-----|
-| id | INTEGER (PK) | イベントID | - |
-| event_type | TEXT | イベント種別 | event_types.name (RESTRICT) |
-| worker | TEXT | 関連ワーカー |
-| data | TEXT | JSON形式の詳細データ |
-| created_at | TIMESTAMP | 発生日時 |
-
-## 4. コマンド体系
-
-### 4.1 コマンド一覧
+## 5. コマンド体系
 
 ```
 devhive
-├── init <sprint-id>              # スプリント初期化
-├── status                        # 全体状態表示
-├── projects                      # 全プロジェクト一覧（横断表示）
-├── help                          # ヘルプ・使い方表示
-├── sprint
-│   └── complete                  # スプリント完了
-├── worker
-│   ├── register <name> <branch>  # ワーカー登録
-│   ├── start [name]              # 作業開始
-│   ├── complete [name]           # 作業完了
-│   ├── status [name] <status>    # 状態変更
-│   ├── session <state>           # セッション状態更新
-│   ├── show [name]               # 詳細表示
-│   ├── task <task>               # タスク更新
-│   └── error <message>           # エラー報告
-├── msg
-│   ├── send <to> <message>       # メッセージ送信
-│   ├── broadcast <message>       # 全員に送信
-│   ├── unread                    # 未読確認
-│   └── read <id|all>             # 既読化
-├── events                        # イベントログ
-├── watch                         # 状態監視
-└── version                       # バージョン表示
+├── up [worker...]      # ワーカー起動（worktree自動作成）
+├── down [worker...]    # ワーカー停止
+├── ps                  # ワーカー一覧
+├── start <worker>      # 特定ワーカー開始
+├── stop <worker>       # 特定ワーカー停止
+├── logs [worker]       # ログ表示
+├── rm <worker>         # ワーカー削除
+├── exec <worker> <cmd> # コマンド実行
+├── roles               # ロール一覧
+├── config              # 設定表示
+├── session <state>     # セッション状態更新（Hooks用）
+└── version             # バージョン表示
 ```
 
-### 4.2 環境変数
-
-| 変数名 | 説明 | 例 |
-|--------|------|-----|
-| DEVHIVE_PROJECT | プロジェクト名（DB分離用、最低優先度） | duel-log-app |
-| DEVHIVE_WORKER | デフォルトのワーカー名 | security |
-
-#### プロジェクト自動検出
-
-DevHiveはプロジェクトを自動的に検出する。検出の優先順位:
-
-| 優先度 | 方法 | 説明 |
-|--------|------|------|
-| 1 | `--project` / `-P` フラグ | 明示的な指定（最優先） |
-| 2 | `.devhive` ファイル | cwdから上位へ検索、ファイル内容がプロジェクト名 |
-| 3 | パス検出 | `~/.devhive/projects/<name>/...` 配下にいる場合 |
-| 4 | `DEVHIVE_PROJECT` 環境変数 | 後方互換性のため（最低優先度） |
-
-#### プロジェクト指定方法
-
-```bash
-# 方法1: --project フラグ（-P）（最優先）
-devhive --project duel-log-app init sprint-01
-devhive -P duel-log-app status
-
-# 方法2: .devhive ファイル（プロジェクトルートに配置）
-echo "duel-log-app" > /path/to/project/.devhive
-cd /path/to/project
-devhive status  # 自動的に duel-log-app を検出
-
-# 方法3: ~/.devhive/projects/ 配下で作業
-cd ~/.devhive/projects/duel-log-app/worktrees/frontend
-devhive status  # 自動的に duel-log-app を検出
-
-# 方法4: 環境変数（後方互換性）
-export DEVHIVE_PROJECT=duel-log-app
-devhive init sprint-01
-```
-
-#### ワーカー名省略
-
-環境変数を設定すると、コマンドでワーカー名を省略できる:
-
-```bash
-export DEVHIVE_WORKER=security
-
-# 以下は同等
-devhive worker start
-devhive worker start security
-```
-
-### 4.3 典型的なワークフロー
-
-#### PM（プロジェクトマネージャー）
-
-```bash
-# 1. スプリント開始
-devhive init sprint-05
-
-# 2. ワーカー登録
-devhive worker register security fix/security-auth --issue "#313"
-devhive worker register quality fix/quality-check --issue "#314"
-
-# 3. 状態監視
-devhive status
-devhive watch
-
-# 4. 問題発生時の確認
-devhive events --limit 20
-devhive msg unread
-```
-
-#### ワーカー
-
-```bash
-# 環境変数設定（セッション開始時）
-export DEVHIVE_WORKER=security
-
-# 1. 作業開始
-devhive worker start --task "認証APIの実装"
-
-# 2. タスク更新
-devhive worker task "トークン検証の実装中"
-
-# 3. 他ワーカーへの連絡
-devhive msg send quality "認証APIを変更しました"
-
-# 4. 未読確認
-devhive msg unread
-
-# 5. 状態監視（バックグラウンド）
-devhive watch --filter=message
-
-# 6. 作業完了
-devhive worker complete
-```
-
-## 5. イベント種別
-
-全ての操作はeventsテーブルに記録される。
-
-| イベント種別 | 説明 | dataの例 |
-|-------------|------|----------|
-| sprint_created | スプリント作成 | {"sprint_id": "sprint-05"} |
-| sprint_completed | スプリント完了 | {"sprint_id": "sprint-05"} |
-| worker_registered | ワーカー登録 | {"branch": "fix/xxx", "issue": "#123"} |
-| worker_status_changed | ワーカー状態変更 | {"status": "working"} |
-| worker_session_changed | セッション状態変更 | {"session_state": "waiting_permission"} |
-| worker_task_updated | タスク更新 | {"task": "認証API実装中"} |
-| worker_error | エラー報告 | {"message": "ビルド失敗"} |
-| message_sent | メッセージ送信 | {"to": "quality", "type": "info"} |
-
-## 6. watchコマンド仕様
-
-### 6.1 動作
-
-eventsテーブルをポーリングし、前回以降の新規イベントを出力する。
-
-### 6.2 フィルタオプション
-
-```bash
-devhive watch                    # 全変化を監視
-devhive watch --filter=message   # メッセージのみ
-devhive watch --filter=worker    # ワーカー状態変化のみ
-```
-
-### 6.3 出力例
-
-```
-[12:34:56] message: quality → you: "DuelTable.vue編集します"
-[12:35:10] worker: quality → completed
-[12:36:00] message: (broadcast) pm: "15分後にマージします"
-```
-
-## 7. 拡張ポイント
-
-### 7.1 将来的な機能追加候補
-
-1. **Web UI**: ブラウザから状態を確認
-2. **Slack/Discord連携**: 通知の外部送信
-3. **統計機能**: スプリントの振り返りデータ
-4. **設定ファイル読み込み**: sprint.confの自動パース
-5. **VS Code拡張**: エディタ統合
-
-### 7.2 Worktree自動作成
-
-`devhive worker register`に`--create-worktree`フラグを付けると、Git Worktreeを自動作成:
-
-```bash
-# Worktreeを自動作成
-devhive worker register frontend feat/frontend --create-worktree
-
-# 作成先: ~/.devhive/projects/<project>/worktrees/<worker-name>
-```
-
-### 7.3 Claude Code Hooks連携
-
-Claude Codeのhooks機能と連携して、セッション状態を自動更新できる。
-
-#### セットアップ
-
-```bash
-# インストール
-./scripts/devhive-setup-hooks.sh --install
-
-# 確認
-./scripts/devhive-setup-hooks.sh --show
-
-# アンインストール
-./scripts/devhive-setup-hooks.sh --uninstall
-```
-
-#### 動作
-
-| フック | トリガー | 状態変更 |
-|--------|----------|----------|
-| PreToolUse | Bash/Edit/Write実行前 | → waiting_permission |
-| PostToolUse | Bash/Edit/Write実行後 | → running |
-| Stop | Claude停止時 | → idle |
-
-#### 設定例（~/.claude/settings.json）
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "Bash|Edit|Write",
-      "hooks": [{"type": "command", "command": "devhive worker session waiting_permission"}]
-    }],
-    "PostToolUse": [{
-      "matcher": "Bash|Edit|Write",
-      "hooks": [{"type": "command", "command": "devhive worker session running"}]
-    }],
-    "Stop": [{
-      "hooks": [{"type": "command", "command": "devhive worker session idle"}]
-    }]
-  }
-}
-```
-
-### 7.4 連携スクリプト
-
-DevHiveは状態管理に専念し、実行環境との連携はオプションのスクリプトで提供:
-
-```
-scripts/
-├── devhive-launch.sh       # AIツール起動
-├── devhive-send-task.sh    # タスク送信
-├── devhive-dashboard.sh    # ダッシュボード
-├── devhive-setup-hooks.sh  # Claude Code Hooks設定
-└── examples/
-    └── sprint.conf.example
-```
-
-## 8. ファイル構成
-
-```
-devhive/
-├── cmd/
-│   └── devhive/
-│       └── main.go          # CLIエントリーポイント
-├── internal/
-│   └── db/
-│       ├── db.go            # データベース操作
-│       └── schema.sql       # SQLiteスキーマ
-├── docs/
-│   ├── design.md            # 本ドキュメント
-│   └── commands.md          # コマンドリファレンス
-├── scripts/                 # 連携スクリプト（オプション）
-├── templates/
-│   └── WORKER_ROLE.md       # Worker role template (reference)
-├── go.mod
-├── go.sum
-├── README.md
-└── .gitignore
-```
-
-### 8.2 運用時のディレクトリ構成
-
-プロジェクト固有の設定はホームディレクトリに配置:
-
-```
-~/.devhive/
-├── state.db                 # グローバルDB（プロジェクト未指定時）
-└── projects/
-    └── <project-name>/
-        ├── state.db         # プロジェクト専用DB
-        ├── roles/           # ロール定義ファイル（CLAUDE.md内容を含む）
-        │   ├── frontend.md  # → Worktreeに CLAUDE.md としてコピー
-        │   └── backend.md
-        ├── sprints/         # スプリント設定
-        │   └── sprint-01.conf
-        └── worktrees/       # Git Worktree配置場所
-```
-
-### 8.3 推奨セットアップ手順
-
-```bash
-# 1. devhiveをインストール
-go build -o devhive ./cmd/devhive
-ln -s $(pwd)/devhive ~/bin/devhive
-export PATH="$HOME/bin:$PATH"
-
-# 2. プロジェクト設定ディレクトリを作成
-mkdir -p ~/.devhive/projects/my-project/{roles,templates,sprints,worktrees}
-
-# 3. 環境変数を設定（.bashrcなどに追加）
-export DEVHIVE_PROJECT=my-project
-
-# 4. スプリント開始
-devhive init sprint-01
-```
-
-## 9. 技術スタック
-
-| 項目 | 選定 | 理由 |
-|------|------|------|
-| 言語 | Go 1.21+ | 高速起動、単一バイナリ、クロスプラットフォーム |
-| DB | SQLite3 | 組み込み、ファイルベース、トランザクション |
-| CLI | spf13/cobra | Goの標準的CLIフレームワーク |
-| SQLiteドライバ | mattn/go-sqlite3 | 成熟した実装、CGO依存 |
+## 6. データモデル
+
+### workers テーブル
+
+| カラム | 型 | 説明 |
+|--------|-----|------|
+| name | TEXT (PK) | ワーカー名 |
+| sprint_id | TEXT | 所属スプリント |
+| branch | TEXT | 作業ブランチ |
+| role_name | TEXT | ロール名 |
+| worktree_path | TEXT | Worktreeパス |
+| status | TEXT | pending/working/completed |
+| session_state | TEXT | running/idle/stopped |
+| progress | INTEGER | 進捗 (0-100) |
+| current_task | TEXT | タスク説明 |
+
+### events テーブル
+
+| カラム | 型 | 説明 |
+|--------|-----|------|
+| id | INTEGER (PK) | イベントID |
+| event_type | TEXT | イベント種別 |
+| worker | TEXT | 関連ワーカー |
+| data | TEXT | JSON詳細データ |
+| created_at | TIMESTAMP | 発生日時 |
+
+## 7. 組み込みロール
+
+| ロール | 説明 |
+|--------|------|
+| @frontend | フロントエンド |
+| @backend | バックエンド |
+| @test | テスト・QA |
+| @docs | ドキュメント |
+| @security | セキュリティ |
+| @devops | CI/CD |
+
+## 8. 技術スタック
+
+| 項目 | 選定 |
+|------|------|
+| 言語 | Go 1.21+ |
+| DB | SQLite3 (WAL) |
+| CLI | spf13/cobra |
+| YAML | gopkg.in/yaml.v3 |

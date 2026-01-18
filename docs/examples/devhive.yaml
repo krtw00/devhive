@@ -1,0 +1,38 @@
+# DevHive Compose Configuration Example
+# Place this file as .devhive.yaml in your project root
+
+version: "1"
+project: my-project  # Optional: defaults to directory name
+
+# Default settings (optional)
+defaults:
+  base_branch: develop
+
+# Worker definitions
+workers:
+  frontend:
+    branch: feat/ui
+    role: "@frontend"
+    task: |
+      フロントエンド実装
+      - コンポーネント作成
+      - スタイリング
+
+  backend:
+    branch: feat/api
+    role: "@backend"
+    task: API実装
+
+  docs:
+    branch: docs/api
+    role: "@docs"
+    task: ドキュメント作成
+    disabled: true  # Skip this worker
+
+# Available built-in roles:
+# @frontend - Frontend development (React/Vue/TypeScript)
+# @backend  - Backend development (Python/Go/Node.js)
+# @test     - Testing and QA
+# @docs     - Documentation
+# @security - Security review
+# @devops   - CI/CD and infrastructure

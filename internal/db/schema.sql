@@ -39,10 +39,12 @@ INSERT OR IGNORE INTO message_types (name, description) VALUES
 INSERT OR IGNORE INTO event_types (name, description) VALUES
     ('sprint_created', 'Sprint was created'),
     ('sprint_completed', 'Sprint was completed'),
+    ('sprint_loaded', 'Sprint was loaded from YAML'),
     ('worker_registered', 'Worker was registered'),
     ('worker_status_changed', 'Worker status changed'),
     ('worker_session_changed', 'Worker session state changed'),
     ('worker_task_updated', 'Worker task was updated'),
+    ('worker_progress_updated', 'Worker progress was updated'),
     ('worker_error', 'Worker reported an error'),
     ('message_sent', 'Message was sent'),
     ('message_broadcast', 'Message was broadcast');
@@ -71,6 +73,8 @@ CREATE TABLE IF NOT EXISTS workers (
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'working', 'completed', 'blocked', 'error')),
     session_state TEXT DEFAULT 'stopped' CHECK(session_state IN ('running', 'waiting_permission', 'idle', 'stopped')),
     current_task TEXT,
+    progress INTEGER DEFAULT 0 CHECK(progress >= 0 AND progress <= 100),
+    activity TEXT,
     last_commit TEXT,
     error_count INTEGER DEFAULT 0,
     last_error TEXT,

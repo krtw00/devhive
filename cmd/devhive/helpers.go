@@ -6,8 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-
-	"github.com/iguchi/devhive/internal/db"
 )
 
 // getWorkerName returns the worker name from args or environment variable
@@ -32,19 +30,18 @@ func stringPtr(s string) *string {
 // createGitWorktree creates a git worktree for the worker
 // Returns the path to the created worktree
 func createGitWorktree(workerName, branch, repoPath string) (string, error) {
-	// Determine worktree base path
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	var err error
+
+	// Determine repo path (project root)
+	if repoPath == "" {
+		repoPath, err = os.Getwd()
+		if err != nil {
+			return "", err
+		}
 	}
 
-	project := db.GetProjectName()
-	var worktreePath string
-	if project != "" {
-		worktreePath = filepath.Join(home, ".devhive", "projects", project, "worktrees", workerName)
-	} else {
-		worktreePath = filepath.Join(home, ".devhive", "worktrees", workerName)
-	}
+	// Worktree path: <project>/.devhive/worktrees/<worker>
+	worktreePath := filepath.Join(repoPath, ".devhive", "worktrees", workerName)
 
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0755); err != nil {
@@ -53,15 +50,8 @@ func createGitWorktree(workerName, branch, repoPath string) (string, error) {
 
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
-		return "", fmt.Errorf("worktree path already exists: %s", worktreePath)
-	}
-
-	// Determine repo path
-	if repoPath == "" {
-		repoPath, err = os.Getwd()
-		if err != nil {
-			return "", err
-		}
+		// Already exists - return the path (useful for re-running up)
+		return worktreePath, nil
 	}
 
 	// Check if branch exists locally

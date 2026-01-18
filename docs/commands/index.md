@@ -3,12 +3,7 @@
 ## 目次
 
 - [グローバルオプション](#グローバルオプション)
-- [Sprint コマンド](sprint.md) - スプリント管理
-- [Worker コマンド](worker.md) - ワーカー管理
-- [Role コマンド](role.md) - ロール管理
-- [Message コマンド](msg.md) - メッセージ管理
-- [Events コマンド](events.md) - イベント・監視
-- [Cleanup コマンド](cleanup.md) - クリーンアップ
+- [Compose コマンド](compose.md) - Docker風インターフェース
 - [Hooks 連携](hooks.md) - Claude Code連携
 
 ## グローバルオプション
@@ -16,62 +11,31 @@
 ```
 -h, --help              ヘルプを表示
 -P, --project <name>    プロジェクト名を指定
---json                  JSON形式で出力（対応コマンドのみ）
 ```
 
 ## 環境変数
 
 | 変数名 | 説明 | 例 |
 |--------|------|-----|
-| DEVHIVE_WORKER | デフォルトのワーカー名 | security |
-| DEVHIVE_PROJECT | プロジェクト名（自動検出の最低優先度） | duel-log-app |
-
-```bash
-export DEVHIVE_WORKER=security
-export DEVHIVE_PROJECT=duel-log-app
-```
-
-## プロジェクト自動検出
-
-DevHiveはプロジェクトを以下の優先順位で自動検出する:
-
-1. **`--project` / `-P` フラグ**（最優先）
-2. **`.devhive` ファイル** - cwdから上位へ検索
-3. **パス検出** - `~/.devhive/projects/<name>/...` 配下にいる場合
-4. **`DEVHIVE_PROJECT` 環境変数**（最低優先度）
-
-```bash
-# フラグで指定
-devhive -P myproject status
-
-# .devhive ファイルを作成してプロジェクトルートに配置
-echo "myproject" > /path/to/project/.devhive
-
-# ~/.devhive/projects/ 配下で作業すると自動検出
-cd ~/.devhive/projects/myproject/worktrees
-devhive status
-```
+| DEVHIVE_WORKER | デフォルトのワーカー名 | frontend |
+| DEVHIVE_PROJECT | プロジェクト名 | myapp |
 
 ## クイックリファレンス
 
-### PM（プロジェクトマネージャー）
-
 ```bash
-devhive init sprint-01                              # スプリント開始
-devhive sprint setup workers.json --create-worktrees # 一括ワーカー登録
-devhive status                                      # 状態確認
-devhive projects                                    # 全プロジェクト一覧
-devhive sprint report                               # レポート生成
-devhive sprint complete                             # スプリント完了
-```
+# 基本ワークフロー
+devhive up                # 全て自動セットアップ
+devhive ps                # ワーカー一覧
+devhive logs -f           # ログをリアルタイム表示
+devhive down              # ワーカー停止
 
-### ワーカー
+# 個別操作
+devhive start <worker>    # 特定ワーカー開始
+devhive stop <worker>     # 特定ワーカー停止
+devhive rm <worker>       # ワーカー削除
+devhive exec <w> <cmd>    # worktreeでコマンド実行
 
-```bash
-export DEVHIVE_WORKER=frontend
-devhive worker start --task "UI実装"   # 作業開始
-devhive worker session running          # セッション状態更新
-devhive msg unread                       # 未読確認
-devhive worker task "ボタン実装中"      # タスク更新
-devhive worker complete                  # 作業完了
+# 情報
+devhive roles -b          # 組み込みロール一覧
+devhive config            # 設定表示
 ```
