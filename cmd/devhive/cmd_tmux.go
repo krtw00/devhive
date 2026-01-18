@@ -23,11 +23,22 @@ Examples:
   devhive tmux                    # Start all workers in tmux
   devhive tmux frontend backend   # Start specific workers
   devhive tmux --session myapp    # Use custom session name
-  devhive tmux --attach=false     # Create but don't attach`,
+  devhive tmux --no-attach        # Create but don't attach`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionName, _ := cmd.Flags().GetString("session")
 			attach, _ := cmd.Flags().GetBool("attach")
+			noAttach, _ := cmd.Flags().GetBool("no-attach")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+			// Handle --no-attach flag
+			if noAttach {
+				attach = false
+			}
+
+			// Auto-detect: disable attach if not running in a TTY
+			if attach && !isTerminal() {
+				attach = false
+			}
 
 			// Check tmux is available
 			if _, err := exec.LookPath("tmux"); err != nil {
@@ -91,9 +102,14 @@ Examples:
 
 			// Check if worktree exists or if this is a no-worktree worker
 			if _, err := os.Stat(firstWorktree); os.IsNotExist(err) {
-				// For no-worktree workers, use the project root (configDir)
+				// For no-worktree workers, create context in .devhive/contexts/<worker>/
 				if firstWorker.Worktree == "" {
-					firstWorktree = configDir
+					contextDir := filepath.Join(configDir, ".devhive", "contexts", firstName)
+					if err := os.MkdirAll(contextDir, 0755); err == nil {
+						// Generate context files for no-worktree worker
+						GenerateContextFiles(contextDir, firstName, firstWorker, config, configDir)
+					}
+					firstWorktree = contextDir
 				} else {
 					return fmt.Errorf("worktree not found: %s (run 'devhive up' first)", firstWorktree)
 				}
@@ -128,11 +144,14 @@ Examples:
 
 				// Check if worktree exists or if this is a no-worktree worker
 				if _, err := os.Stat(worktree); os.IsNotExist(err) {
-					// For no-worktree workers, use the project root (configDir)
+					// For no-worktree workers, create context in .devhive/contexts/<worker>/
 					if worker.Worktree == "" {
-						// Check if this worker was registered without a worktree
-						// by seeing if the default worktree path doesn't exist
-						worktree = configDir
+						contextDir := filepath.Join(configDir, ".devhive", "contexts", name)
+						if err := os.MkdirAll(contextDir, 0755); err == nil {
+							// Generate context files for no-worktree worker
+							GenerateContextFiles(contextDir, name, worker, config, configDir)
+						}
+						worktree = contextDir
 					} else {
 						fmt.Printf("⚠ Skipping %s: worktree not found\n", name)
 						continue
@@ -188,7 +207,8 @@ Examples:
 	}
 
 	cmd.Flags().StringP("session", "s", "", "Tmux session name (default: devhive-<project>)")
-	cmd.Flags().Bool("attach", true, "Attach to session after creation")
+	cmd.Flags().Bool("attach", true, "Attach to session after creation (auto-disabled if not in TTY)")
+	cmd.Flags().Bool("no-attach", false, "Don't attach to session after creation")
 	cmd.Flags().Bool("dry-run", false, "Show what would be done")
 
 	return cmd
@@ -301,4 +321,13 @@ func tmuxListCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// isTerminal checks if stdin is connected to a terminal
+func isTerminal() bool {
+	fileInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }

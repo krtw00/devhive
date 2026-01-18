@@ -800,6 +800,22 @@ func (db *DB) CleanupOldEvents(days int, dryRun bool) (int, error) {
 	return count, nil
 }
 
+// ClearAllEvents removes all events from the database
+func (db *DB) ClearAllEvents() (int, error) {
+	var count int
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = db.conn.Exec(`DELETE FROM events`)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 // CleanupOldMessages removes read messages older than N days
 // If dryRun is true, returns count without deleting
 func (db *DB) CleanupOldMessages(days int, dryRun bool) (int, error) {

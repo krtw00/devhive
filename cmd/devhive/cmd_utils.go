@@ -159,9 +159,12 @@ func cleanCmd() *cobra.Command {
 
 Examples:
   devhive clean           # Remove completed workers (keep worktrees)
-  devhive clean --all     # Also delete worktrees and branches`,
+  devhive clean --all     # Also delete worktrees and branches
+  devhive clean --logs    # Also clear event logs
+  devhive clean --all --logs  # Full cleanup for new sprint`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			all, _ := cmd.Flags().GetBool("all")
+			logs, _ := cmd.Flags().GetBool("logs")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 			// Get completed workers
@@ -229,11 +232,22 @@ Examples:
 				}
 			}
 
+			// Clear logs if requested
+			if logs {
+				count, err := database.ClearAllEvents()
+				if err != nil {
+					fmt.Printf("⚠ Failed to clear logs: %v\n", err)
+				} else {
+					fmt.Printf("✅ Cleared %d log events\n", count)
+				}
+			}
+
 			return nil
 		},
 	}
 
 	cmd.Flags().Bool("all", false, "Also delete worktrees and branches")
+	cmd.Flags().Bool("logs", false, "Also clear event logs")
 	cmd.Flags().Bool("dry-run", false, "Show what would be deleted without doing it")
 
 	return cmd

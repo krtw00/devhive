@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-01-18
+
+### Added
+- `devhive tmux --no-attach` オプション: セッション作成後にattachしない
+- `devhive clean --logs` オプション: イベントログもクリア
+- no-worktreeワーカー用のコンテキスト自動生成（`.devhive/contexts/<worker>/`）
+
+### Changed
+- tmux: TTYがない環境（Claude Code等）では自動的にattach=falseに
+
+### Fixed
+- no-worktreeワーカーがCLAUDE.mdにアクセスできない問題を修正
+
 ## [0.3.3] - 2025-01-18
 
 ### Added
