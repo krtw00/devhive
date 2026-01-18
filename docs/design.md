@@ -40,12 +40,25 @@ workers:
     branch: feat/ui
     role: "@frontend"
     task: フロントエンド実装
+    tool: claude          # AIツール指定（省略時: generic）
 
   backend:
     branch: feat/api
     role: "@backend"
     task: API実装
+    tool: codex
 ```
+
+### Worker設定フィールド
+
+| フィールド | 必須 | 説明 |
+|-----------|------|------|
+| branch | Yes | 作業ブランチ名 |
+| role | No | ロール名（@builtin or カスタム） |
+| task | No | タスク説明（.devhive/tasks/<name>.mdで上書き可） |
+| tool | No | AIツール: claude, codex, gemini, generic（デフォルト） |
+| worktree | No | Worktreeパスを上書き |
+| disabled | No | true でスキップ |
 
 ## 5. コマンド体系
 
@@ -90,8 +103,9 @@ devhive
 | name | TEXT (PK) | ワーカー名 |
 | sprint_id | TEXT | 所属スプリント |
 | branch | TEXT | 作業ブランチ |
-| role_name | TEXT | ロール名 |
+| role_name | TEXT | ロール名（自由形式） |
 | worktree_path | TEXT | Worktreeパス |
+| tool | TEXT | AIツール (claude/codex/gemini/generic) |
 | status | TEXT | pending/working/completed |
 | session_state | TEXT | running/idle/stopped |
 | progress | INTEGER | 進捗 (0-100) |
@@ -107,18 +121,68 @@ devhive
 | data | TEXT | JSON詳細データ |
 | created_at | TIMESTAMP | 発生日時 |
 
-## 7. 組み込みロール
+## 7. ロール定義
 
-| ロール | 説明 |
-|--------|------|
-| @frontend | フロントエンド |
-| @backend | バックエンド |
-| @test | テスト・QA |
-| @docs | ドキュメント |
-| @security | セキュリティ |
-| @devops | CI/CD |
+ロールは自由形式で、以下の方法で詳細を定義可能：
 
-## 8. 技術スタック
+1. **`.devhive.yaml` で定義**:
+```yaml
+roles:
+  frontend:
+    description: "フロントエンド担当"
+    file: .devhive/roles/frontend.md
+```
+
+2. **`.devhive/roles/<name>.md` にファイルで配置**
+
+3. **DB の roles テーブルに登録**（オプション）
+
+## 8. コンテキストファイル生成
+
+`devhive up` 実行時、各Worktreeにコンテキストファイルを自動生成：
+
+### 生成されるファイル
+
+| ファイル | 条件 | 説明 |
+|----------|------|------|
+| CONTEXT.md | 常に生成 | 汎用コンテキスト（ロール、タスク、通信方法） |
+| CLAUDE.md | tool: claude | Claude Code用指示書 |
+| AGENTS.md | tool: codex | Codex用指示書 |
+| GEMINI.md | tool: gemini | Gemini用指示書 |
+
+### CONTEXT.md の内容
+
+```markdown
+# DevHive Worker Context
+
+## Worker
+- **Name**: frontend
+- **Branch**: feat/ui
+- **Role**: @frontend
+- **Tool**: claude
+
+## Project
+- **Name**: myapp
+- **Base Branch**: develop
+
+## Role
+フロントエンド開発担当...
+
+## Task
+フロントエンド実装...
+
+## Communication
+PMとの通信コマンド...
+```
+
+### ツール別ファイル
+
+AIツールが自動的に読み込むファイル名を使用：
+- **Claude Code**: `CLAUDE.md` を自動読み込み
+- **Codex**: `AGENTS.md` を自動読み込み
+- **Gemini**: `GEMINI.md` を自動読み込み
+
+## 9. 技術スタック
 
 | 項目 | 選定 |
 |------|------|

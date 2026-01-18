@@ -225,6 +225,14 @@ func (db *DB) migrate() error {
 	db.conn.Exec(`INSERT OR IGNORE INTO event_types (name, description) VALUES
 		('branch_merged', 'Branch was merged')`)
 
+	// Migration: Add tool column to workers if not exists
+	if !db.columnExists("workers", "tool") {
+		_, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN tool TEXT DEFAULT 'generic'`)
+		if err != nil {
+			return fmt.Errorf("failed to add tool column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -287,6 +295,7 @@ type Worker struct {
 	RoleName       string // FK to roles.name
 	RoleFile       string // From joined roles table
 	WorktreePath   string
+	Tool           string // AI tool: claude, codex, gemini, generic
 	Status         string // pending/working/completed/blocked/error
 	SessionState   string // running/waiting_permission/idle/stopped
 	CurrentTask    string
@@ -520,7 +529,7 @@ func (db *DB) CompleteSprint() (string, error) {
 // workerSelectColumns defines the standard columns for worker queries
 const workerSelectColumns = `
 	w.name, w.sprint_id, w.branch, COALESCE(w.role_name, ''), COALESCE(r.role_file, ''),
-	COALESCE(w.worktree_path, ''), w.status, COALESCE(w.session_state, 'stopped'),
+	COALESCE(w.worktree_path, ''), COALESCE(w.tool, 'generic'), w.status, COALESCE(w.session_state, 'stopped'),
 	COALESCE(w.current_task, ''), COALESCE(w.progress, 0), COALESCE(w.activity, ''),
 	COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
 	(SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL)`
@@ -529,40 +538,38 @@ const workerSelectColumns = `
 func scanWorker(scanner interface{ Scan(...interface{}) error }) (Worker, error) {
 	var w Worker
 	err := scanner.Scan(&w.Name, &w.SprintID, &w.Branch, &w.RoleName, &w.RoleFile,
-		&w.WorktreePath, &w.Status, &w.SessionState, &w.CurrentTask, &w.Progress, &w.Activity,
+		&w.WorktreePath, &w.Tool, &w.Status, &w.SessionState, &w.CurrentTask, &w.Progress, &w.Activity,
 		&w.LastCommit, &w.ErrorCount, &w.LastError, &w.UpdatedAt, &w.UnreadMessages)
 	return w, err
 }
 
 // RegisterWorker registers a worker
-func (db *DB) RegisterWorker(name, sprintID, branch, roleName, worktreePath string) error {
-	// Validate role exists if specified
-	if roleName != "" {
-		role, err := db.GetRole(roleName)
-		if err != nil {
-			return err
-		}
-		if role == nil {
-			return fmt.Errorf("role not found: %s", roleName)
-		}
+// Note: role validation is optional - roleName can be any string
+// Roles can be defined in .devhive.yaml or .devhive/roles/<name>.md
+func (db *DB) RegisterWorker(name, sprintID, branch, roleName, worktreePath, tool string) error {
+
+	// Default tool to generic if not specified
+	if tool == "" {
+		tool = "generic"
 	}
 
 	_, err := db.conn.Exec(`
-		INSERT INTO workers (name, sprint_id, branch, role_name, worktree_path)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO workers (name, sprint_id, branch, role_name, worktree_path, tool)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			sprint_id = excluded.sprint_id,
 			branch = excluded.branch,
 			role_name = excluded.role_name,
 			worktree_path = excluded.worktree_path,
+			tool = excluded.tool,
 			status = 'pending',
 			updated_at = CURRENT_TIMESTAMP
-	`, name, sprintID, branch, nullString(roleName), nullString(worktreePath))
+	`, name, sprintID, branch, nullString(roleName), nullString(worktreePath), tool)
 	if err != nil {
 		return err
 	}
 
-	return db.logEvent("worker_registered", name, map[string]interface{}{"branch": branch, "role": roleName})
+	return db.logEvent("worker_registered", name, map[string]interface{}{"branch": branch, "role": roleName, "tool": tool})
 }
 
 // UpdateWorkerStatus updates worker status

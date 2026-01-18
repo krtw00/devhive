@@ -59,7 +59,7 @@ Examples:
 			fmt.Printf("Project: %s\n\n", config.Project)
 
 			if dryRun {
-				fmt.Println("=== DRY RUN MODE ===\n")
+				fmt.Println("=== DRY RUN MODE ===")
 			}
 
 
@@ -171,11 +171,24 @@ Examples:
 						if err := createWorkerEnvrc(wt, workerName); err != nil {
 							fmt.Printf("    ⚠ Failed to create .envrc: %v\n", err)
 						}
+
+						// Generate context files (CONTEXT.md + tool-specific)
+						if err := GenerateContextFiles(wt, workerName, worker, config, configDir); err != nil {
+							fmt.Printf("    ⚠ Failed to create context files: %v\n", err)
+						} else {
+							tool := worker.GetEffectiveTool()
+							if tool != "generic" {
+								fmt.Printf("    ✓ Context: CONTEXT.md + %s\n", strings.ToUpper(tool)+".md")
+							} else {
+								fmt.Printf("    ✓ Context: CONTEXT.md\n")
+							}
+						}
 					}
 				}
 
 				// Register worker
-				err := database.RegisterWorker(workerName, sprintID, worker.Branch, roleName, worktreePath)
+				tool := worker.GetEffectiveTool()
+				err := database.RegisterWorker(workerName, sprintID, worker.Branch, roleName, worktreePath, tool)
 				if err != nil {
 					fmt.Printf("  ⚠ Failed to register %s: %v\n", workerName, err)
 					continue

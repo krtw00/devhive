@@ -31,11 +31,13 @@ workers:
     branch: feat/ui
     role: "@frontend"
     task: フロントエンド実装
+    tool: claude        # AIツール指定（claude/codex/gemini/generic）
 
   backend:
     branch: feat/api
     role: "@backend"
     task: API実装
+    tool: codex
 ```
 
 ### 3. 起動
@@ -94,6 +96,19 @@ workers:
 ...
 ```
 
+## コンテキストファイル自動生成
+
+`devhive up` 時、各Worktreeにコンテキストファイルを自動生成:
+
+| ファイル | 生成条件 | 用途 |
+|----------|----------|------|
+| `CONTEXT.md` | 常に | 汎用コンテキスト |
+| `CLAUDE.md` | tool: claude | Claude Code用 |
+| `AGENTS.md` | tool: codex | Codex用 |
+| `GEMINI.md` | tool: gemini | Gemini用 |
+
+これによりAIツールが自動的にロール・タスク情報を読み込みます。
+
 ## コマンド一覧
 
 ### 基本操作
@@ -128,16 +143,26 @@ workers:
 | `devhive reply <w> "msg"` | ワーカーに返信 |
 | `devhive broadcast "msg"` | 全員に送信 |
 
-## 組み込みロール
+## ロール定義
 
-| ロール | 説明 |
-|--------|------|
-| `@frontend` | フロントエンド |
-| `@backend` | バックエンド |
-| `@test` | テスト・QA |
-| `@docs` | ドキュメント |
-| `@security` | セキュリティ |
-| `@devops` | CI/CD |
+ロールは以下のいずれかで定義できます：
+
+1. **`.devhive.yaml` で定義**:
+```yaml
+roles:
+  frontend:
+    description: "フロントエンド担当"
+    file: .devhive/roles/frontend.md
+```
+
+2. **`.devhive/roles/<name>.md` にファイルで定義**
+
+3. **インラインで定義** (worker に直接):
+```yaml
+workers:
+  dev:
+    role: "開発担当"
+```
 
 ## gitignore
 

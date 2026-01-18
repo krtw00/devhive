@@ -85,31 +85,31 @@ func TestRoleOperations(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Test CreateRole
-	err := db.CreateRole("frontend", "Frontend developer", "roles/frontend.md", "--model sonnet")
+	// Test CreateRole (use custom role name to avoid conflict with builtin roles)
+	err := db.CreateRole("custom-frontend", "Custom Frontend developer", "roles/custom-frontend.md", "--model sonnet")
 	if err != nil {
 		t.Fatalf("CreateRole failed: %v", err)
 	}
 
 	// Test GetRole
-	role, err := db.GetRole("frontend")
+	role, err := db.GetRole("custom-frontend")
 	if err != nil {
 		t.Fatalf("GetRole failed: %v", err)
 	}
 	if role == nil {
 		t.Fatal("Expected role, got nil")
 	}
-	if role.Name != "frontend" {
-		t.Errorf("Expected role name 'frontend', got '%s'", role.Name)
+	if role.Name != "custom-frontend" {
+		t.Errorf("Expected role name 'custom-frontend', got '%s'", role.Name)
 	}
-	if role.Description != "Frontend developer" {
-		t.Errorf("Expected description 'Frontend developer', got '%s'", role.Description)
+	if role.Description != "Custom Frontend developer" {
+		t.Errorf("Expected description 'Custom Frontend developer', got '%s'", role.Description)
 	}
 	if role.Args != "--model sonnet" {
 		t.Errorf("Expected args '--model sonnet', got '%s'", role.Args)
 	}
 
-	// Test GetAllRoles
+	// Test GetAllRoles (only user-defined roles, no builtin roles in DB)
 	roles, err := db.GetAllRoles()
 	if err != nil {
 		t.Fatalf("GetAllRoles failed: %v", err)
@@ -119,13 +119,13 @@ func TestRoleOperations(t *testing.T) {
 	}
 
 	// Test UpdateRole
-	err = db.UpdateRole("frontend", "Senior Frontend developer", "roles/frontend-v2.md", "--model opus")
+	err = db.UpdateRole("custom-frontend", "Senior Custom Frontend developer", "roles/custom-frontend-v2.md", "--model opus")
 	if err != nil {
 		t.Fatalf("UpdateRole failed: %v", err)
 	}
 
-	role, _ = db.GetRole("frontend")
-	if role.Description != "Senior Frontend developer" {
+	role, _ = db.GetRole("custom-frontend")
+	if role.Description != "Senior Custom Frontend developer" {
 		t.Errorf("Expected updated description, got '%s'", role.Description)
 	}
 	if role.Args != "--model opus" {
@@ -133,12 +133,12 @@ func TestRoleOperations(t *testing.T) {
 	}
 
 	// Test DeleteRole
-	err = db.DeleteRole("frontend")
+	err = db.DeleteRole("custom-frontend")
 	if err != nil {
 		t.Fatalf("DeleteRole failed: %v", err)
 	}
 
-	role, _ = db.GetRole("frontend")
+	role, _ = db.GetRole("custom-frontend")
 	if role != nil {
 		t.Error("Expected role to be deleted")
 	}
@@ -161,7 +161,7 @@ func TestWorkerOperations(t *testing.T) {
 	}
 
 	// Test RegisterWorker
-	err = db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "/path/to/worktree")
+	err = db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "/path/to/worktree", "claude")
 	if err != nil {
 		t.Fatalf("RegisterWorker failed: %v", err)
 	}
@@ -257,8 +257,8 @@ func TestMessageOperations(t *testing.T) {
 
 	// Setup: create sprint and workers
 	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "")
-	db.RegisterWorker("be", "sprint-01", "feat/api", "", "")
+	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
+	db.RegisterWorker("be", "sprint-01", "feat/api", "", "", "")
 
 	// Test SendMessage
 	msgID, err := db.SendMessage("fe", "be", "info", "API Update", "Please update the API")
@@ -320,7 +320,7 @@ func TestEventOperations(t *testing.T) {
 
 	// Events are created by other operations
 	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "")
+	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
 	db.UpdateWorkerStatus("fe", "working", nil, nil)
 
 	// Test GetRecentEvents
@@ -369,7 +369,7 @@ func TestCleanupOperations(t *testing.T) {
 
 	// Create some events
 	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "")
+	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
 
 	// Test CleanupOldEvents (dry run)
 	count, err := db.CleanupOldEvents(30, true)
@@ -449,7 +449,7 @@ func TestWorkerWithRole(t *testing.T) {
 	db.CreateRole("frontend", "Frontend dev", "roles/frontend.md", "--model sonnet")
 
 	// Register worker with role
-	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "")
+	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "", "")
 	if err != nil {
 		t.Fatalf("RegisterWorker failed: %v", err)
 	}
@@ -467,16 +467,21 @@ func TestWorkerWithRole(t *testing.T) {
 	}
 }
 
-func TestInvalidRoleReference(t *testing.T) {
+func TestFreeFormRole(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	db.CreateSprint("sprint-01", "", "")
 
-	// Try to register worker with non-existent role
-	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "nonexistent", "")
-	if err == nil {
-		t.Error("Expected error for non-existent role")
+	// Any role name is allowed (no validation)
+	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "any-role-name", "", "")
+	if err != nil {
+		t.Errorf("Expected no error for free-form role, got: %v", err)
+	}
+
+	worker, _ := db.GetWorker("fe")
+	if worker.RoleName != "any-role-name" {
+		t.Errorf("Expected role 'any-role-name', got '%s'", worker.RoleName)
 	}
 }
 
@@ -485,8 +490,8 @@ func TestWorkerUnreadMessages(t *testing.T) {
 	defer cleanup()
 
 	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "")
-	db.RegisterWorker("be", "sprint-01", "feat/api", "", "")
+	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
+	db.RegisterWorker("be", "sprint-01", "feat/api", "", "", "")
 
 	// Send messages to fe
 	db.SendMessage("be", "fe", "info", "", "Message 1")
