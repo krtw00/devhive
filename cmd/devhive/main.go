@@ -49,39 +49,47 @@ Quick Start:
 	// Global flags
 	rootCmd.PersistentFlags().StringVarP(&projectFlag, "project", "P", "", "Project name (auto-detected from .devhive.yaml)")
 
-	// Commands
-	rootCmd.AddCommand(versionCmd())
-	rootCmd.AddCommand(initCmd())
+	// Define command groups
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "basic", Title: "Basic Commands:"},
+		&cobra.Group{ID: "worker", Title: "Worker Management:"},
+		&cobra.Group{ID: "utility", Title: "Utility Commands:"},
+		&cobra.Group{ID: "comm", Title: "Communication:"},
+	)
 
-	// Docker-style commands
-	rootCmd.AddCommand(upCmd())
-	rootCmd.AddCommand(downCmd())
-	rootCmd.AddCommand(psCmd())
-	rootCmd.AddCommand(startCmd())
-	rootCmd.AddCommand(stopCmd())
-	rootCmd.AddCommand(logsCmd())
-	rootCmd.AddCommand(rmCmd())
-	rootCmd.AddCommand(execCmd())
-	rootCmd.AddCommand(rolesCmd())
-	rootCmd.AddCommand(configCmd())
+	// Basic commands
+	rootCmd.AddCommand(withGroup(initCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(upCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(downCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(psCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(statusCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(logsCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(configCmd(), "basic"))
+
+	// Worker management commands
+	rootCmd.AddCommand(withGroup(startCmd(), "worker"))
+	rootCmd.AddCommand(withGroup(stopCmd(), "worker"))
+	rootCmd.AddCommand(withGroup(execCmd(), "worker"))
+	rootCmd.AddCommand(withGroup(rmCmd(), "worker"))
+	rootCmd.AddCommand(withGroup(rolesCmd(), "worker"))
 
 	// Utility commands
-	rootCmd.AddCommand(mergeCmd())
-	rootCmd.AddCommand(progressCmd())
-	rootCmd.AddCommand(cleanCmd())
-	rootCmd.AddCommand(noteCmd())
-	rootCmd.AddCommand(diffCmd())
-	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(withGroup(progressCmd(), "utility"))
+	rootCmd.AddCommand(withGroup(mergeCmd(), "utility"))
+	rootCmd.AddCommand(withGroup(diffCmd(), "utility"))
+	rootCmd.AddCommand(withGroup(noteCmd(), "utility"))
+	rootCmd.AddCommand(withGroup(cleanCmd(), "utility"))
 
 	// Communication commands
-	rootCmd.AddCommand(requestCmd())  // Worker -> PM
-	rootCmd.AddCommand(reportCmd())   // Worker -> PM
-	rootCmd.AddCommand(msgsCmd())     // Worker inbox
-	rootCmd.AddCommand(inboxCmd())    // PM inbox
-	rootCmd.AddCommand(replyCmd())    // PM -> Worker
-	rootCmd.AddCommand(broadcastCmd()) // PM -> All
+	rootCmd.AddCommand(withGroup(requestCmd(), "comm"))
+	rootCmd.AddCommand(withGroup(reportCmd(), "comm"))
+	rootCmd.AddCommand(withGroup(msgsCmd(), "comm"))
+	rootCmd.AddCommand(withGroup(inboxCmd(), "comm"))
+	rootCmd.AddCommand(withGroup(replyCmd(), "comm"))
+	rootCmd.AddCommand(withGroup(broadcastCmd(), "comm"))
 
-	// Internal commands (for hooks)
+	// Other commands (no group - shown in "Additional Commands")
+	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(sessionCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -94,8 +102,14 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("devhive v0.6.0")
+			fmt.Println("devhive v0.7.0")
 		},
 	}
+}
+
+// withGroup sets the GroupID on a command and returns it
+func withGroup(cmd *cobra.Command, groupID string) *cobra.Command {
+	cmd.GroupID = groupID
+	return cmd
 }
 
