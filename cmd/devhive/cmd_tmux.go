@@ -94,10 +94,18 @@ Examples:
 			firstWorker := workers[firstName]
 			firstWorktree := getWorktreePath(firstName, firstWorker.Worktree)
 
-			// Ensure worktree exists
+			// Check if worktree exists or if this is a no-worktree worker
 			if _, err := os.Stat(firstWorktree); os.IsNotExist(err) {
-				return fmt.Errorf("worktree not found: %s (run 'devhive up' first)", firstWorktree)
+				// For no-worktree workers, use the project root (configDir)
+				if firstWorker.Worktree == "" {
+					firstWorktree = configDir
+				} else {
+					return fmt.Errorf("worktree not found: %s (run 'devhive up' first)", firstWorktree)
+				}
 			}
+
+			// Track successful pane creation
+			createdPanes := 0
 
 			// Create new session with first pane
 			firstCmd := buildPaneCommand(firstName, firstWorker, firstWorktree, config, configDir)
@@ -115,6 +123,7 @@ Examples:
 			exec.Command("tmux", "select-pane", "-t", sessionName+":workers.0", "-T", firstName).Run()
 
 			fmt.Printf("✓ %s: %s\n", firstName, firstWorker.GetFullCommand(firstName, config, configDir))
+			createdPanes++
 
 			// Create additional panes for remaining workers
 			for i := 1; i < len(workerNames); i++ {
@@ -122,17 +131,34 @@ Examples:
 				worker := workers[name]
 				worktree := getWorktreePath(name, worker.Worktree)
 
-				// Ensure worktree exists
+				// Check if worktree exists or if this is a no-worktree worker
 				if _, err := os.Stat(worktree); os.IsNotExist(err) {
-					fmt.Printf("⚠ Skipping %s: worktree not found\n", name)
-					continue
+					// For no-worktree workers, use the project root (configDir)
+					if worker.Worktree == "" {
+						// Check if this worker was registered without a worktree
+						// by seeing if the default worktree path doesn't exist
+						worktree = configDir
+					} else {
+						fmt.Printf("⚠ Skipping %s: worktree not found\n", name)
+						continue
+					}
 				}
+
+				// Apply tiled layout before each split to distribute space evenly
+				// This helps prevent "pane too small" errors with many panes
+				exec.Command("tmux", "select-layout", "-t", sessionName+":workers", "tiled").Run()
 
 				// Split pane
 				splitCmd := exec.Command("tmux", "split-window", "-t", sessionName+":workers",
 					"-c", worktree)
-				if err := splitCmd.Run(); err != nil {
-					fmt.Printf("⚠ Failed to create pane for %s: %v\n", name, err)
+				splitOutput, err := splitCmd.CombinedOutput()
+				if err != nil {
+					errMsg := strings.TrimSpace(string(splitOutput))
+					if errMsg == "" {
+						errMsg = err.Error()
+					}
+					fmt.Printf("⚠ Failed to create pane for %s: %s\n", name, errMsg)
+					fmt.Printf("  (hint: tmux window may be too small to create more panes)\n")
 					continue
 				}
 
@@ -145,6 +171,7 @@ Examples:
 				exec.Command("tmux", "select-pane", "-t", sessionName+":workers", "-T", name).Run()
 
 				fmt.Printf("✓ %s: %s\n", name, worker.GetFullCommand(name, config, configDir))
+				createdPanes++
 			}
 
 			// Apply tiled layout for even distribution
@@ -154,7 +181,7 @@ Examples:
 			exec.Command("tmux", "set-option", "-t", sessionName, "pane-border-status", "top").Run()
 			exec.Command("tmux", "set-option", "-t", sessionName, "pane-border-format", " #{pane_title} ").Run()
 
-			fmt.Printf("\n✓ Created tmux session: %s (%d panes)\n", sessionName, len(workerNames))
+			fmt.Printf("\n✓ Created tmux session: %s (%d panes)\n", sessionName, createdPanes)
 
 			if attach {
 				return tmuxAttach(sessionName)
