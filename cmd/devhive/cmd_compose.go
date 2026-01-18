@@ -277,10 +277,12 @@ Use -a to show all workers including completed ones.`,
 				Progress int
 				Activity string
 			}
+			hiddenCount := 0
 
 			for _, w := range workers {
 				// Skip completed workers unless -a flag
 				if !showAll && w.Status == "completed" {
+					hiddenCount++
 					continue
 				}
 
@@ -308,7 +310,11 @@ Use -a to show all workers including completed ones.`,
 				if showAll {
 					fmt.Println("No workers")
 				} else {
-					fmt.Println("No running workers")
+					if hiddenCount > 0 {
+						fmt.Printf("No running workers (%d completed, use -a to show all)\n", hiddenCount)
+					} else {
+						fmt.Println("No running workers")
+					}
 				}
 				return nil
 			}
@@ -332,6 +338,11 @@ Use -a to show all workers including completed ones.`,
 					w.Name, statusStr, sessionStr, progressStr, w.Activity)
 			}
 			tw.Flush()
+
+			// Show hidden count if any
+			if !showAll && hiddenCount > 0 {
+				fmt.Printf("\n(%d completed workers hidden, use -a to show all)\n", hiddenCount)
+			}
 
 			return nil
 		},

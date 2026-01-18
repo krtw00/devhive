@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -11,11 +12,12 @@ import (
 
 // ComposeConfig represents the .devhive.yaml configuration
 type ComposeConfig struct {
-	Version  string                  `yaml:"version"`
-	Project  string                  `yaml:"project"`
-	Roles    map[string]ComposeRole  `yaml:"roles"`
-	Defaults ComposeDefaults         `yaml:"defaults"`
-	Workers  map[string]ComposeWorker `yaml:"workers"`
+	Version     string                   `yaml:"version"`
+	Project     string                   `yaml:"project"`
+	Roles       map[string]ComposeRole   `yaml:"roles"`
+	Defaults    ComposeDefaults          `yaml:"defaults"`
+	Workers     map[string]ComposeWorker `yaml:"workers"`
+	WorkerOrder []string                 `yaml:"-"` // Preserves yaml definition order
 }
 
 // ComposeRole represents a role definition in compose config
@@ -93,6 +95,9 @@ func LoadComposeFile(path string) (*ComposeConfig, error) {
 		return nil, fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
+	// Extract worker order from yaml using yaml.Node
+	config.WorkerOrder = extractWorkerOrder(data)
+
 	// Set defaults
 	if config.Version == "" {
 		config.Version = "1"
@@ -104,6 +109,38 @@ func LoadComposeFile(path string) (*ComposeConfig, error) {
 	}
 
 	return &config, nil
+}
+
+// extractWorkerOrder parses yaml to extract worker keys in definition order
+func extractWorkerOrder(data []byte) []string {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+
+	// root.Content[0] is the document node
+	if len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+
+	// Find "workers" key in the document
+	for i := 0; i < len(doc.Content)-1; i += 2 {
+		keyNode := doc.Content[i]
+		if keyNode.Value == "workers" {
+			valueNode := doc.Content[i+1]
+			if valueNode.Kind == yaml.MappingNode {
+				var order []string
+				// MappingNode contains key-value pairs alternating
+				for j := 0; j < len(valueNode.Content)-1; j += 2 {
+					workerKeyNode := valueNode.Content[j]
+					order = append(order, workerKeyNode.Value)
+				}
+				return order
+			}
+		}
+	}
+	return nil
 }
 
 // GetRoleContent returns the content of a role (from file or inline)
@@ -148,6 +185,48 @@ func (c *ComposeConfig) GetEffectiveWorkers(workerNames []string) map[string]Com
 	}
 
 	return result
+}
+
+// GetOrderedWorkerNames returns worker names in yaml definition order
+// If specific names are provided, returns them in the order they appear in yaml
+// Falls back to alphabetical order if WorkerOrder is not available
+func (c *ComposeConfig) GetOrderedWorkerNames(filterNames []string) []string {
+	workers := c.GetEffectiveWorkers(filterNames)
+	if len(workers) == 0 {
+		return nil
+	}
+
+	// If WorkerOrder is available, use it
+	if len(c.WorkerOrder) > 0 {
+		var ordered []string
+		for _, name := range c.WorkerOrder {
+			if _, ok := workers[name]; ok {
+				ordered = append(ordered, name)
+			}
+		}
+		// Add any workers not in WorkerOrder (shouldn't happen normally)
+		for name := range workers {
+			found := false
+			for _, n := range ordered {
+				if n == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ordered = append(ordered, name)
+			}
+		}
+		return ordered
+	}
+
+	// Fallback to alphabetical order
+	names := make([]string, 0, len(workers))
+	for name := range workers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ResolveRole resolves a role name to its actual name

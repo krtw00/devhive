@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2025-01-18
+
+### Fixed
+- tmuxペインの作成順序がyaml定義順に従うように修正
+- `devhive ps`で完了済みワーカーが非表示の場合、その旨を表示するように改善
+
 ## [0.3.1] - 2025-01-18
 
 ### Fixed

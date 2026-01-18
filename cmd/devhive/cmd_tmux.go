@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -51,12 +50,8 @@ Examples:
 				return fmt.Errorf("no workers to start")
 			}
 
-			// Sort worker names for consistent ordering
-			workerNames := make([]string, 0, len(workers))
-			for name := range workers {
-				workerNames = append(workerNames, name)
-			}
-			sort.Strings(workerNames)
+			// Get worker names in yaml definition order
+			workerNames := config.GetOrderedWorkerNames(args)
 
 			// Default session name
 			if sessionName == "" {
