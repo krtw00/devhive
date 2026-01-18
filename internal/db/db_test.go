@@ -36,7 +36,7 @@ func TestSprintOperations(t *testing.T) {
 	defer cleanup()
 
 	// Test CreateSprint
-	err := db.CreateSprint("sprint-01", "", "")
+	err := db.CreateSprint("sprint-01")
 	if err != nil {
 		t.Fatalf("CreateSprint failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSprintOperations(t *testing.T) {
 	}
 
 	// Test duplicate sprint fails
-	err = db.CreateSprint("sprint-02", "", "")
+	err = db.CreateSprint("sprint-02")
 	if err == nil {
 		t.Error("Expected error creating sprint while one is active")
 	}
@@ -81,87 +81,18 @@ func TestSprintOperations(t *testing.T) {
 	}
 }
 
-func TestRoleOperations(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	// Test CreateRole (use custom role name to avoid conflict with builtin roles)
-	err := db.CreateRole("custom-frontend", "Custom Frontend developer", "roles/custom-frontend.md", "--model sonnet")
-	if err != nil {
-		t.Fatalf("CreateRole failed: %v", err)
-	}
-
-	// Test GetRole
-	role, err := db.GetRole("custom-frontend")
-	if err != nil {
-		t.Fatalf("GetRole failed: %v", err)
-	}
-	if role == nil {
-		t.Fatal("Expected role, got nil")
-	}
-	if role.Name != "custom-frontend" {
-		t.Errorf("Expected role name 'custom-frontend', got '%s'", role.Name)
-	}
-	if role.Description != "Custom Frontend developer" {
-		t.Errorf("Expected description 'Custom Frontend developer', got '%s'", role.Description)
-	}
-	if role.Args != "--model sonnet" {
-		t.Errorf("Expected args '--model sonnet', got '%s'", role.Args)
-	}
-
-	// Test GetAllRoles (only user-defined roles, no builtin roles in DB)
-	roles, err := db.GetAllRoles()
-	if err != nil {
-		t.Fatalf("GetAllRoles failed: %v", err)
-	}
-	if len(roles) != 1 {
-		t.Errorf("Expected 1 role, got %d", len(roles))
-	}
-
-	// Test UpdateRole
-	err = db.UpdateRole("custom-frontend", "Senior Custom Frontend developer", "roles/custom-frontend-v2.md", "--model opus")
-	if err != nil {
-		t.Fatalf("UpdateRole failed: %v", err)
-	}
-
-	role, _ = db.GetRole("custom-frontend")
-	if role.Description != "Senior Custom Frontend developer" {
-		t.Errorf("Expected updated description, got '%s'", role.Description)
-	}
-	if role.Args != "--model opus" {
-		t.Errorf("Expected updated args, got '%s'", role.Args)
-	}
-
-	// Test DeleteRole
-	err = db.DeleteRole("custom-frontend")
-	if err != nil {
-		t.Fatalf("DeleteRole failed: %v", err)
-	}
-
-	role, _ = db.GetRole("custom-frontend")
-	if role != nil {
-		t.Error("Expected role to be deleted")
-	}
-}
-
 func TestWorkerOperations(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
 	// Create sprint first
-	err := db.CreateSprint("sprint-01", "", "")
+	err := db.CreateSprint("sprint-01")
 	if err != nil {
 		t.Fatalf("CreateSprint failed: %v", err)
 	}
 
-	// Create role
-	err = db.CreateRole("frontend", "Frontend", "", "")
-	if err != nil {
-		t.Fatalf("CreateRole failed: %v", err)
-	}
-
-	// Test RegisterWorker
-	err = db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "/path/to/worktree", "claude")
+	// Test RegisterWorker (simplified: only name and sprint_id)
+	err = db.RegisterWorker("fe", "sprint-01")
 	if err != nil {
 		t.Fatalf("RegisterWorker failed: %v", err)
 	}
@@ -177,9 +108,6 @@ func TestWorkerOperations(t *testing.T) {
 	if worker.Name != "fe" {
 		t.Errorf("Expected worker name 'fe', got '%s'", worker.Name)
 	}
-	if worker.Branch != "feat/ui" {
-		t.Errorf("Expected branch 'feat/ui', got '%s'", worker.Branch)
-	}
 	if worker.Status != "pending" {
 		t.Errorf("Expected status 'pending', got '%s'", worker.Status)
 	}
@@ -188,8 +116,7 @@ func TestWorkerOperations(t *testing.T) {
 	}
 
 	// Test UpdateWorkerStatus
-	task := "Building UI"
-	err = db.UpdateWorkerStatus("fe", "working", &task, nil)
+	err = db.UpdateWorkerStatus("fe", "working", nil)
 	if err != nil {
 		t.Fatalf("UpdateWorkerStatus failed: %v", err)
 	}
@@ -197,9 +124,6 @@ func TestWorkerOperations(t *testing.T) {
 	worker, _ = db.GetWorker("fe")
 	if worker.Status != "working" {
 		t.Errorf("Expected status 'working', got '%s'", worker.Status)
-	}
-	if worker.CurrentTask != "Building UI" {
-		t.Errorf("Expected task 'Building UI', got '%s'", worker.CurrentTask)
 	}
 
 	// Test UpdateWorkerSessionState
@@ -213,15 +137,18 @@ func TestWorkerOperations(t *testing.T) {
 		t.Errorf("Expected session state 'running', got '%s'", worker.SessionState)
 	}
 
-	// Test UpdateWorkerTask
-	err = db.UpdateWorkerTask("fe", "Implementing buttons")
+	// Test UpdateWorkerProgress
+	err = db.UpdateWorkerProgress("fe", 50, "Building UI")
 	if err != nil {
-		t.Fatalf("UpdateWorkerTask failed: %v", err)
+		t.Fatalf("UpdateWorkerProgress failed: %v", err)
 	}
 
 	worker, _ = db.GetWorker("fe")
-	if worker.CurrentTask != "Implementing buttons" {
-		t.Errorf("Expected task 'Implementing buttons', got '%s'", worker.CurrentTask)
+	if worker.Progress != 50 {
+		t.Errorf("Expected progress 50, got %d", worker.Progress)
+	}
+	if worker.Activity != "Building UI" {
+		t.Errorf("Expected activity 'Building UI', got '%s'", worker.Activity)
 	}
 
 	// Test ReportWorkerError
@@ -256,9 +183,9 @@ func TestMessageOperations(t *testing.T) {
 	defer cleanup()
 
 	// Setup: create sprint and workers
-	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
-	db.RegisterWorker("be", "sprint-01", "feat/api", "", "", "")
+	db.CreateSprint("sprint-01")
+	db.RegisterWorker("fe", "sprint-01")
+	db.RegisterWorker("be", "sprint-01")
 
 	// Test SendMessage
 	msgID, err := db.SendMessage("fe", "be", "info", "API Update", "Please update the API")
@@ -319,9 +246,9 @@ func TestEventOperations(t *testing.T) {
 	defer cleanup()
 
 	// Events are created by other operations
-	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
-	db.UpdateWorkerStatus("fe", "working", nil, nil)
+	db.CreateSprint("sprint-01")
+	db.RegisterWorker("fe", "sprint-01")
+	db.UpdateWorkerStatus("fe", "working", nil)
 
 	// Test GetRecentEvents
 	events, err := db.GetRecentEvents(10, nil, nil)
@@ -368,8 +295,8 @@ func TestCleanupOperations(t *testing.T) {
 	defer cleanup()
 
 	// Create some events
-	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
+	db.CreateSprint("sprint-01")
+	db.RegisterWorker("fe", "sprint-01")
 
 	// Test CleanupOldEvents (dry run)
 	count, err := db.CleanupOldEvents(30, true)
@@ -416,7 +343,7 @@ func TestMigration(t *testing.T) {
 	defer db2.Close()
 
 	// Verify the database works
-	err = db2.CreateSprint("sprint-01", "", "")
+	err = db2.CreateSprint("sprint-01")
 	if err != nil {
 		t.Fatalf("Failed to create sprint after migration: %v", err)
 	}
@@ -440,58 +367,13 @@ func TestProjectDetection(t *testing.T) {
 	}
 }
 
-func TestWorkerWithRole(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	// Create sprint and role
-	db.CreateSprint("sprint-01", "", "")
-	db.CreateRole("frontend", "Frontend dev", "roles/frontend.md", "--model sonnet")
-
-	// Register worker with role
-	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "frontend", "", "")
-	if err != nil {
-		t.Fatalf("RegisterWorker failed: %v", err)
-	}
-
-	// Verify role file is joined
-	worker, err := db.GetWorker("fe")
-	if err != nil {
-		t.Fatalf("GetWorker failed: %v", err)
-	}
-	if worker.RoleName != "frontend" {
-		t.Errorf("Expected role name 'frontend', got '%s'", worker.RoleName)
-	}
-	if worker.RoleFile != "roles/frontend.md" {
-		t.Errorf("Expected role file 'roles/frontend.md', got '%s'", worker.RoleFile)
-	}
-}
-
-func TestFreeFormRole(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	db.CreateSprint("sprint-01", "", "")
-
-	// Any role name is allowed (no validation)
-	err := db.RegisterWorker("fe", "sprint-01", "feat/ui", "any-role-name", "", "")
-	if err != nil {
-		t.Errorf("Expected no error for free-form role, got: %v", err)
-	}
-
-	worker, _ := db.GetWorker("fe")
-	if worker.RoleName != "any-role-name" {
-		t.Errorf("Expected role 'any-role-name', got '%s'", worker.RoleName)
-	}
-}
-
 func TestWorkerUnreadMessages(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	db.CreateSprint("sprint-01", "", "")
-	db.RegisterWorker("fe", "sprint-01", "feat/ui", "", "", "")
-	db.RegisterWorker("be", "sprint-01", "feat/api", "", "", "")
+	db.CreateSprint("sprint-01")
+	db.RegisterWorker("fe", "sprint-01")
+	db.RegisterWorker("be", "sprint-01")
 
 	// Send messages to fe
 	db.SendMessage("be", "fe", "info", "", "Message 1")
@@ -510,7 +392,7 @@ func TestConcurrentAccess(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	db.CreateSprint("sprint-01", "", "")
+	db.CreateSprint("sprint-01")
 
 	// Simulate concurrent reads (basic test)
 	done := make(chan bool, 10)

@@ -187,14 +187,6 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Migration: Add args column to roles if not exists
-	if !db.columnExists("roles", "args") {
-		_, err := db.conn.Exec(`ALTER TABLE roles ADD COLUMN args TEXT`)
-		if err != nil {
-			return fmt.Errorf("failed to add args column: %w", err)
-		}
-	}
-
 	// Migration: Add progress column to workers if not exists
 	if !db.columnExists("workers", "progress") {
 		_, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN progress INTEGER DEFAULT 0`)
@@ -224,14 +216,6 @@ func (db *DB) migrate() error {
 	// Migration: Add branch_merged event type
 	db.conn.Exec(`INSERT OR IGNORE INTO event_types (name, description) VALUES
 		('branch_merged', 'Branch was merged')`)
-
-	// Migration: Add tool column to workers if not exists
-	if !db.columnExists("workers", "tool") {
-		_, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN tool TEXT DEFAULT 'generic'`)
-		if err != nil {
-			return fmt.Errorf("failed to add tool column: %w", err)
-		}
-	}
 
 	return nil
 }
@@ -268,37 +252,21 @@ func (db *DB) Close() error {
 // Data Structures
 // ============================================
 
-// Role represents a worker role
-type Role struct {
-	Name        string
-	Description string
-	RoleFile    string
-	Args        string
-	CreatedAt   time.Time
-}
-
 // Sprint represents a sprint
 type Sprint struct {
 	ID          string
-	ConfigFile  string
-	ProjectPath string
 	Status      string
 	StartedAt   time.Time
 	CompletedAt *time.Time
 }
 
 // Worker represents a worker
+// Note: branch, role, tool, task are defined in .devhive.yaml (not stored in DB)
 type Worker struct {
 	Name           string
 	SprintID       string
-	Branch         string
-	RoleName       string // FK to roles.name
-	RoleFile       string // From joined roles table
-	WorktreePath   string
-	Tool           string // AI tool: claude, codex, gemini, generic
 	Status         string // pending/working/completed/blocked/error
 	SessionState   string // running/waiting_permission/idle/stopped
-	CurrentTask    string
 	Progress       int    // 0-100 progress percentage
 	Activity       string // Current activity description
 	LastCommit     string
@@ -374,85 +342,11 @@ func checkRowsAffected(result sql.Result, entityType, name string) error {
 }
 
 // ============================================
-// Role Operations
-// ============================================
-
-// CreateRole creates a new role
-func (db *DB) CreateRole(name, description, roleFile, args string) error {
-	_, err := db.conn.Exec(
-		"INSERT INTO roles (name, description, role_file, args) VALUES (?, ?, ?, ?)",
-		name, nullString(description), nullString(roleFile), nullString(args),
-	)
-	return err
-}
-
-// GetRole returns a role by name
-func (db *DB) GetRole(name string) (*Role, error) {
-	row := db.conn.QueryRow(`
-		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), COALESCE(args, ''), created_at
-		FROM roles WHERE name = ?
-	`, name)
-
-	var r Role
-	err := row.Scan(&r.Name, &r.Description, &r.RoleFile, &r.Args, &r.CreatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
-// GetAllRoles returns all roles
-func (db *DB) GetAllRoles() ([]Role, error) {
-	rows, err := db.conn.Query(`
-		SELECT name, COALESCE(description, ''), COALESCE(role_file, ''), COALESCE(args, ''), created_at
-		FROM roles ORDER BY name
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var roles []Role
-	for rows.Next() {
-		var r Role
-		err := rows.Scan(&r.Name, &r.Description, &r.RoleFile, &r.Args, &r.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		roles = append(roles, r)
-	}
-	return roles, nil
-}
-
-// UpdateRole updates a role
-func (db *DB) UpdateRole(name, description, roleFile, args string) error {
-	result, err := db.conn.Exec(`
-		UPDATE roles SET description = ?, role_file = ?, args = ? WHERE name = ?
-	`, nullString(description), nullString(roleFile), nullString(args), name)
-	if err != nil {
-		return err
-	}
-	return checkRowsAffected(result, "role", name)
-}
-
-// DeleteRole deletes a role
-func (db *DB) DeleteRole(name string) error {
-	result, err := db.conn.Exec("DELETE FROM roles WHERE name = ?", name)
-	if err != nil {
-		return err
-	}
-	return checkRowsAffected(result, "role", name)
-}
-
-// ============================================
 // Sprint Operations
 // ============================================
 
 // CreateSprint creates a new sprint
-func (db *DB) CreateSprint(id, configFile, projectPath string) error {
+func (db *DB) CreateSprint(id string) error {
 	// Check for existing active sprint
 	var existing string
 	err := db.conn.QueryRow("SELECT id FROM sprints WHERE status = 'active' LIMIT 1").Scan(&existing)
@@ -460,10 +354,7 @@ func (db *DB) CreateSprint(id, configFile, projectPath string) error {
 		return fmt.Errorf("active sprint already exists: %s", existing)
 	}
 
-	_, err = db.conn.Exec(
-		"INSERT INTO sprints (id, config_file, project_path) VALUES (?, ?, ?)",
-		id, nullString(configFile), nullString(projectPath),
-	)
+	_, err = db.conn.Exec("INSERT INTO sprints (id) VALUES (?)", id)
 	if err != nil {
 		return err
 	}
@@ -474,13 +365,13 @@ func (db *DB) CreateSprint(id, configFile, projectPath string) error {
 // GetActiveSprint returns the active sprint
 func (db *DB) GetActiveSprint() (*Sprint, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, COALESCE(config_file, ''), COALESCE(project_path, ''), status, started_at, completed_at
+		SELECT id, status, started_at, completed_at
 		FROM sprints WHERE status = 'active' ORDER BY started_at DESC LIMIT 1
 	`)
 
 	var s Sprint
 	var completedAt sql.NullTime
-	err := row.Scan(&s.ID, &s.ConfigFile, &s.ProjectPath, &s.Status, &s.StartedAt, &completedAt)
+	err := row.Scan(&s.ID, &s.Status, &s.StartedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -528,59 +419,43 @@ func (db *DB) CompleteSprint() (string, error) {
 
 // workerSelectColumns defines the standard columns for worker queries
 const workerSelectColumns = `
-	w.name, w.sprint_id, w.branch, COALESCE(w.role_name, ''), COALESCE(r.role_file, ''),
-	COALESCE(w.worktree_path, ''), COALESCE(w.tool, 'generic'), w.status, COALESCE(w.session_state, 'stopped'),
-	COALESCE(w.current_task, ''), COALESCE(w.progress, 0), COALESCE(w.activity, ''),
+	w.name, w.sprint_id, w.status, COALESCE(w.session_state, 'stopped'),
+	COALESCE(w.progress, 0), COALESCE(w.activity, ''),
 	COALESCE(w.last_commit, ''), w.error_count, COALESCE(w.last_error, ''), w.updated_at,
 	(SELECT COUNT(*) FROM messages m WHERE m.to_worker = w.name AND m.read_at IS NULL)`
 
 // scanWorker scans a worker row into a Worker struct
 func scanWorker(scanner interface{ Scan(...interface{}) error }) (Worker, error) {
 	var w Worker
-	err := scanner.Scan(&w.Name, &w.SprintID, &w.Branch, &w.RoleName, &w.RoleFile,
-		&w.WorktreePath, &w.Tool, &w.Status, &w.SessionState, &w.CurrentTask, &w.Progress, &w.Activity,
-		&w.LastCommit, &w.ErrorCount, &w.LastError, &w.UpdatedAt, &w.UnreadMessages)
+	err := scanner.Scan(&w.Name, &w.SprintID, &w.Status, &w.SessionState,
+		&w.Progress, &w.Activity, &w.LastCommit, &w.ErrorCount, &w.LastError,
+		&w.UpdatedAt, &w.UnreadMessages)
 	return w, err
 }
 
 // RegisterWorker registers a worker
-// Note: role validation is optional - roleName can be any string
-// Roles can be defined in .devhive.yaml or .devhive/roles/<name>.md
-func (db *DB) RegisterWorker(name, sprintID, branch, roleName, worktreePath, tool string) error {
-
-	// Default tool to generic if not specified
-	if tool == "" {
-		tool = "generic"
-	}
-
+// Note: branch, role, tool, task are defined in .devhive.yaml (not stored in DB)
+func (db *DB) RegisterWorker(name, sprintID string) error {
 	_, err := db.conn.Exec(`
-		INSERT INTO workers (name, sprint_id, branch, role_name, worktree_path, tool)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO workers (name, sprint_id)
+		VALUES (?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			sprint_id = excluded.sprint_id,
-			branch = excluded.branch,
-			role_name = excluded.role_name,
-			worktree_path = excluded.worktree_path,
-			tool = excluded.tool,
 			status = 'pending',
 			updated_at = CURRENT_TIMESTAMP
-	`, name, sprintID, branch, nullString(roleName), nullString(worktreePath), tool)
+	`, name, sprintID)
 	if err != nil {
 		return err
 	}
 
-	return db.logEvent("worker_registered", name, map[string]interface{}{"branch": branch, "role": roleName, "tool": tool})
+	return db.logEvent("worker_registered", name, map[string]interface{}{})
 }
 
 // UpdateWorkerStatus updates worker status
-func (db *DB) UpdateWorkerStatus(name, status string, currentTask, lastCommit *string) error {
+func (db *DB) UpdateWorkerStatus(name, status string, lastCommit *string) error {
 	query := "UPDATE workers SET status = ?, updated_at = CURRENT_TIMESTAMP"
 	args := []interface{}{status}
 
-	if currentTask != nil {
-		query += ", current_task = ?"
-		args = append(args, *currentTask)
-	}
 	if lastCommit != nil {
 		query += ", last_commit = ?"
 		args = append(args, *lastCommit)
@@ -597,21 +472,6 @@ func (db *DB) UpdateWorkerStatus(name, status string, currentTask, lastCommit *s
 		return err
 	}
 	return db.logEvent("worker_status_changed", name, map[string]interface{}{"status": status})
-}
-
-// UpdateWorkerTask updates the current task of a worker
-func (db *DB) UpdateWorkerTask(name, task string) error {
-	result, err := db.conn.Exec(
-		"UPDATE workers SET current_task = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
-		task, name,
-	)
-	if err != nil {
-		return err
-	}
-	if err := checkRowsAffected(result, "worker", name); err != nil {
-		return err
-	}
-	return db.logEvent("worker_task_updated", name, map[string]interface{}{"task": task})
 }
 
 // ReportWorkerError reports an error and sets worker to error status
@@ -667,7 +527,6 @@ func (db *DB) GetWorker(name string) (*Worker, error) {
 	row := db.conn.QueryRow(`
 		SELECT `+workerSelectColumns+`
 		FROM workers w
-		LEFT JOIN roles r ON w.role_name = r.name
 		WHERE w.name = ?
 	`, name)
 
@@ -686,7 +545,6 @@ func (db *DB) GetAllWorkers() ([]Worker, error) {
 	rows, err := db.conn.Query(`
 		SELECT `+workerSelectColumns+`
 		FROM workers w
-		LEFT JOIN roles r ON w.role_name = r.name
 		WHERE w.sprint_id = (SELECT id FROM sprints WHERE status = 'active' ORDER BY started_at DESC LIMIT 1)
 		ORDER BY w.name
 	`)

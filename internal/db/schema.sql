@@ -6,15 +6,6 @@ PRAGMA foreign_keys = ON;
 -- Master Tables
 -- ============================================
 
--- Roles master table
-CREATE TABLE IF NOT EXISTS roles (
-    name TEXT PRIMARY KEY,
-    description TEXT,
-    role_file TEXT,
-    args TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Message types master table
 CREATE TABLE IF NOT EXISTS message_types (
     name TEXT PRIMARY KEY,
@@ -65,28 +56,19 @@ INSERT OR IGNORE INTO event_types (name, description) VALUES
 -- Sprints table
 CREATE TABLE IF NOT EXISTS sprints (
     id TEXT PRIMARY KEY,
-    config_file TEXT,
-    project_path TEXT,
     status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'aborted')),
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP
 );
 
 -- Workers table
--- Note: role_name is free-form (no FK constraint). Role details can be:
---   1. Defined in .devhive.yaml roles section
---   2. Stored in .devhive/roles/<name>.md
---   3. Stored in this DB via roles table (optional)
+-- Note: branch, role, tool, task are defined in .devhive.yaml (not stored in DB)
+-- Worktree path is derived from convention: .devhive/worktrees/<name>
 CREATE TABLE IF NOT EXISTS workers (
     name TEXT PRIMARY KEY,
     sprint_id TEXT NOT NULL,
-    branch TEXT NOT NULL,
-    role_name TEXT,
-    worktree_path TEXT,
-    tool TEXT DEFAULT 'generic' CHECK(tool IN ('claude', 'codex', 'gemini', 'generic')),
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'working', 'completed', 'blocked', 'error')),
     session_state TEXT DEFAULT 'stopped' CHECK(session_state IN ('running', 'waiting_permission', 'idle', 'stopped')),
-    current_task TEXT,
     progress INTEGER DEFAULT 0 CHECK(progress >= 0 AND progress <= 100),
     activity TEXT,
     last_commit TEXT,
@@ -127,8 +109,6 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_workers_sprint ON workers(sprint_id);
 CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status);
-CREATE INDEX IF NOT EXISTS idx_workers_role ON workers(role_name);
-CREATE INDEX IF NOT EXISTS idx_workers_tool ON workers(tool);
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_worker);
 CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_worker);
 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(to_worker, read_at) WHERE read_at IS NULL;

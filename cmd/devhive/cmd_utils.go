@@ -28,15 +28,30 @@ Examples:
 			workerName := args[0]
 			targetBranch := args[1]
 
-			// Get worker info
+			// Verify worker exists in DB
 			worker, err := database.GetWorker(workerName)
-			if err != nil {
+			if err != nil || worker == nil {
 				return fmt.Errorf("worker not found: %s", workerName)
 			}
 
-			if worker.Branch == "" {
-				return fmt.Errorf("worker %s has no branch", workerName)
+			// Load config to get branch
+			configFile, err := FindComposeFile()
+			if err != nil {
+				return err
 			}
+			config, err := LoadComposeFile(configFile)
+			if err != nil {
+				return err
+			}
+
+			workerConfig, ok := config.Workers[workerName]
+			if !ok {
+				return fmt.Errorf("worker %s not found in config", workerName)
+			}
+			if workerConfig.Branch == "" {
+				return fmt.Errorf("worker %s has no branch configured", workerName)
+			}
+			branch := workerConfig.Branch
 
 			// Warning for main/master
 			if targetBranch == "main" || targetBranch == "master" {
@@ -64,9 +79,9 @@ Examples:
 			runGit(cwd, "pull") // Ignore error if no remote
 
 			// Merge worker branch
-			fmt.Printf("Merging %s into %s...\n", worker.Branch, targetBranch)
+			fmt.Printf("Merging %s into %s...\n", branch, targetBranch)
 			noFF, _ := cmd.Flags().GetBool("no-ff")
-			mergeArgs := []string{"merge", worker.Branch}
+			mergeArgs := []string{"merge", branch}
 			if noFF {
 				mergeArgs = append(mergeArgs, "--no-ff")
 			}
@@ -74,10 +89,10 @@ Examples:
 				return fmt.Errorf("merge failed: %w\nResolve conflicts and commit manually", err)
 			}
 
-			fmt.Printf("✅ Successfully merged %s into %s\n", worker.Branch, targetBranch)
+			fmt.Printf("✅ Successfully merged %s into %s\n", branch, targetBranch)
 
 			// Log event
-			database.LogEvent("branch_merged", workerName, fmt.Sprintf(`{"from":"%s","to":"%s"}`, worker.Branch, targetBranch))
+			database.LogEvent("branch_merged", workerName, fmt.Sprintf(`{"from":"%s","to":"%s"}`, branch, targetBranch))
 
 			return nil
 		},
@@ -160,20 +175,30 @@ Examples:
 
 			cwd, _ := os.Getwd()
 
-			for _, name := range completed {
-				worker, _ := database.GetWorker(name)
+			// Load config to get branch info if needed
+			var config *ComposeConfig
+			if all {
+				configFile, _ := FindComposeFile()
+				if configFile != "" {
+					config, _ = LoadComposeFile(configFile)
+				}
+			}
 
-				if all && worker != nil {
-					// Remove worktree
-					if worker.WorktreePath != "" {
-						fmt.Printf("Removing worktree: %s\n", worker.WorktreePath)
-						runGit(cwd, "worktree", "remove", worker.WorktreePath, "--force")
+			for _, name := range completed {
+				if all {
+					// Derive worktree path from convention
+					worktreePath := filepath.Join(".devhive", "worktrees", name)
+					if _, err := os.Stat(worktreePath); err == nil {
+						fmt.Printf("Removing worktree: %s\n", worktreePath)
+						runGit(cwd, "worktree", "remove", worktreePath, "--force")
 					}
 
 					// Delete branch (optional, only if merged)
-					if worker.Branch != "" {
-						fmt.Printf("Deleting branch: %s\n", worker.Branch)
-						runGit(cwd, "branch", "-d", worker.Branch) // -d fails if not merged
+					if config != nil {
+						if workerConfig, ok := config.Workers[name]; ok && workerConfig.Branch != "" {
+							fmt.Printf("Deleting branch: %s\n", workerConfig.Branch)
+							runGit(cwd, "branch", "-d", workerConfig.Branch) // -d fails if not merged
+						}
 					}
 				}
 
@@ -265,30 +290,35 @@ Examples:
 
 			cwd, _ := os.Getwd()
 
-			if len(args) == 0 {
-				// Show all workers
-				workers, err := database.GetAllWorkers()
-				if err != nil {
-					return err
-				}
+			// Load config to get branch info
+			configFile, err := FindComposeFile()
+			if err != nil {
+				return err
+			}
+			config, err := LoadComposeFile(configFile)
+			if err != nil {
+				return err
+			}
 
-				for _, w := range workers {
-					if w.Branch == "" {
+			if len(args) == 0 {
+				// Show all workers from config
+				for name, workerConfig := range config.Workers {
+					if workerConfig.Branch == "" || workerConfig.Disabled {
 						continue
 					}
-					fmt.Printf("\n=== %s (%s) ===\n", w.Name, w.Branch)
-					showDiff(cwd, baseBranch, w.Branch, stat)
+					fmt.Printf("\n=== %s (%s) ===\n", name, workerConfig.Branch)
+					showDiff(cwd, baseBranch, workerConfig.Branch, stat)
 				}
 			} else {
 				workerName := args[0]
-				worker, err := database.GetWorker(workerName)
-				if err != nil {
-					return fmt.Errorf("worker not found: %s", workerName)
+				workerConfig, ok := config.Workers[workerName]
+				if !ok {
+					return fmt.Errorf("worker not found in config: %s", workerName)
 				}
-				if worker.Branch == "" {
-					return fmt.Errorf("worker %s has no branch", workerName)
+				if workerConfig.Branch == "" {
+					return fmt.Errorf("worker %s has no branch configured", workerName)
 				}
-				showDiff(cwd, baseBranch, worker.Branch, stat)
+				showDiff(cwd, baseBranch, workerConfig.Branch, stat)
 			}
 
 			return nil
@@ -306,12 +336,11 @@ func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show overall project status",
-		Long: `Show a summary of all workers, their progress, and branch status.
+		Long: `Show a summary of all workers, their progress, and status.
 
 This provides a quick overview of:
   - Worker count by status
   - Overall progress
-  - Unmerged branches
   - Recent activity`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workers, err := database.GetAllWorkers()
@@ -322,6 +351,13 @@ This provides a quick overview of:
 			if len(workers) == 0 {
 				fmt.Println("No workers registered.")
 				return nil
+			}
+
+			// Load config to get branch info
+			var config *ComposeConfig
+			configFile, _ := FindComposeFile()
+			if configFile != "" {
+				config, _ = LoadComposeFile(configFile)
 			}
 
 			// Count by status
@@ -346,8 +382,12 @@ This provides a quick overview of:
 				icon := statusIcon(w.Status)
 				bar := progressBar(w.Progress, 10)
 				fmt.Printf("  %-12s %s %s %3d%%", w.Name, icon, bar, w.Progress)
-				if w.Branch != "" {
-					fmt.Printf("  (%s)", w.Branch)
+
+				// Show branch from config if available
+				if config != nil {
+					if workerConfig, ok := config.Workers[w.Name]; ok && workerConfig.Branch != "" {
+						fmt.Printf("  (%s)", workerConfig.Branch)
+					}
 				}
 				fmt.Println()
 			}

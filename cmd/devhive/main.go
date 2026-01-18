@@ -65,6 +65,9 @@ Quick Start:
 	rootCmd.AddCommand(withGroup(statusCmd(), "basic"))
 	rootCmd.AddCommand(withGroup(logsCmd(), "basic"))
 	rootCmd.AddCommand(withGroup(configCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(tmuxCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(tmuxKillCmd(), "basic"))
+	rootCmd.AddCommand(withGroup(tmuxListCmd(), "basic"))
 
 	// Worker management commands
 	rootCmd.AddCommand(withGroup(startCmd(), "worker"))
@@ -102,7 +105,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("devhive v0.7.0")
+			fmt.Println("devhive v0.9.0")
 		},
 	}
 }

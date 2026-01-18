@@ -23,10 +23,9 @@ func upCmd() *cobra.Command {
 
 This command:
 1. Reads .devhive.yaml from current directory
-2. Creates/updates roles defined in the config
-3. Creates a sprint if none exists
-4. Registers all workers (or specified workers)
-5. Creates git worktrees (default)
+2. Creates a sprint if none exists
+3. Registers all workers (or specified workers)
+4. Creates git worktrees (default)
 
 Examples:
   devhive up                    # Start all workers with worktrees
@@ -63,52 +62,7 @@ Examples:
 			}
 
 
-			// Step 1: Create/update roles
-			fmt.Println("Registering roles...")
-			for roleName, role := range config.Roles {
-				// Skip if it only extends a builtin
-				if role.Extends != "" && role.File == "" && role.Content == "" {
-					fmt.Printf("  → %s (extends %s)\n", roleName, role.Extends)
-					continue
-				}
-
-				// Get role file path
-				roleFile := ""
-				if role.File != "" {
-					roleFile = role.File
-					if !filepath.IsAbs(roleFile) {
-						roleFile = filepath.Join(configDir, roleFile)
-					}
-				}
-
-				if dryRun {
-					fmt.Printf("  → Would create role: %s\n", roleName)
-					continue
-				}
-
-				// Check if role exists
-				existingRole, _ := database.GetRole(roleName)
-				if existingRole != nil {
-					// Update existing role
-					err := database.UpdateRole(roleName, role.Description, roleFile, role.Args)
-					if err != nil {
-						fmt.Printf("  ⚠ Failed to update role %s: %v\n", roleName, err)
-					} else {
-						fmt.Printf("  ✓ Updated role: %s\n", roleName)
-					}
-				} else {
-					// Create new role
-					err := database.CreateRole(roleName, role.Description, roleFile, role.Args)
-					if err != nil {
-						fmt.Printf("  ⚠ Failed to create role %s: %v\n", roleName, err)
-					} else {
-						fmt.Printf("  ✓ Created role: %s\n", roleName)
-					}
-				}
-			}
-			fmt.Println()
-
-			// Step 2: Ensure sprint exists
+			// Step 1: Ensure sprint exists
 			sprint, err := database.GetActiveSprint()
 			if err != nil {
 				return err
@@ -119,7 +73,7 @@ Examples:
 				if dryRun {
 					fmt.Printf("Would create sprint: %s\n\n", sprintID)
 				} else {
-					if err := database.CreateSprint(sprintID, configFile, ""); err != nil {
+					if err := database.CreateSprint(sprintID); err != nil {
 						return fmt.Errorf("failed to create sprint: %w", err)
 					}
 					fmt.Printf("✓ Created sprint: %s\n\n", sprintID)
@@ -129,7 +83,7 @@ Examples:
 				fmt.Printf("Using existing sprint: %s\n\n", sprintID)
 			}
 
-			// Step 3: Register workers
+			// Step 2: Register workers
 			fmt.Println("Registering workers...")
 			workers := config.GetEffectiveWorkers(args)
 			if len(workers) == 0 {
@@ -141,17 +95,8 @@ Examples:
 			for workerName, worker := range workers {
 				worktreePath := worker.Worktree
 
-				// Resolve role name
+				// Resolve role name (for display only)
 				roleName := config.ResolveRole(worker.Role)
-
-				// Validate role exists (either in DB or as builtin)
-				if roleName != "" && !strings.HasPrefix(worker.Role, "@") {
-					existingRole, _ := database.GetRole(roleName)
-					if existingRole == nil && !templates.IsBuiltinRole(roleName) {
-						fmt.Printf("  ⚠ Role not found: %s (skipping %s)\n", roleName, workerName)
-						continue
-					}
-				}
 
 				if dryRun {
 					fmt.Printf("  → Would register: %s (branch: %s, role: %s)\n", workerName, worker.Branch, roleName)
@@ -167,9 +112,19 @@ Examples:
 						worktreePath = wt
 						fmt.Printf("  ✓ Worktree: %s\n", wt)
 
-						// Create .envrc for direnv
-						if err := createWorkerEnvrc(wt, workerName); err != nil {
-							fmt.Printf("    ⚠ Failed to create .envrc: %v\n", err)
+						// Create .envrc for direnv (unless disabled)
+						generateEnvrc := config.Defaults.GenerateEnvrc == nil || *config.Defaults.GenerateEnvrc
+						if generateEnvrc {
+							if err := createWorkerEnvrc(wt, workerName); err != nil {
+								fmt.Printf("    ⚠ Failed to create .envrc: %v\n", err)
+							} else if config.Defaults.DirenvAllow {
+								// Auto-run direnv allow if configured
+								if err := runDirenvAllow(wt); err != nil {
+									fmt.Printf("    ⚠ Failed to run direnv allow: %v\n", err)
+								} else {
+									fmt.Printf("    ✓ .envrc (direnv allowed)\n")
+								}
+							}
 						}
 
 						// Generate context files (CONTEXT.md + tool-specific)
@@ -186,20 +141,11 @@ Examples:
 					}
 				}
 
-				// Register worker
-				tool := worker.GetEffectiveTool()
-				err := database.RegisterWorker(workerName, sprintID, worker.Branch, roleName, worktreePath, tool)
+				// Register worker (branch, role, tool are in YAML config, not DB)
+				err := database.RegisterWorker(workerName, sprintID)
 				if err != nil {
 					fmt.Printf("  ⚠ Failed to register %s: %v\n", workerName, err)
 					continue
-				}
-
-				// Set task (from .devhive/tasks/<name>.md or inline)
-				taskContent := GetTaskContent(configDir, workerName, worker.Task)
-				if taskContent != "" {
-					if err := database.UpdateWorkerTask(workerName, strings.TrimSpace(taskContent)); err != nil {
-						fmt.Printf("  ⚠ Failed to set task for %s: %v\n", workerName, err)
-					}
 				}
 
 				// Build output
@@ -214,7 +160,11 @@ Examples:
 			fmt.Printf("\n✓ Registered %d workers\n", registeredCount)
 
 			if createWorktrees && registeredCount > 0 {
-				fmt.Println("\nTip: Run 'direnv allow' in each worktree to enable environment variables")
+				generateEnvrc := config.Defaults.GenerateEnvrc == nil || *config.Defaults.GenerateEnvrc
+				if generateEnvrc && !config.Defaults.DirenvAllow {
+					fmt.Println("\nTip: Run 'direnv allow' in each worktree to enable environment variables")
+					fmt.Println("     Or set 'defaults.direnv_allow: true' in .devhive.yaml")
+				}
 			}
 
 			return nil
@@ -242,7 +192,7 @@ Examples:
 			// If specific workers provided, complete them
 			if len(args) > 0 {
 				for _, name := range args {
-					if err := database.UpdateWorkerStatus(name, "completed", nil, nil); err != nil {
+					if err := database.UpdateWorkerStatus(name, "completed", nil); err != nil {
 						fmt.Printf("⚠ Failed to complete %s: %v\n", name, err)
 					} else {
 						fmt.Printf("✓ Worker '%s' completed\n", name)
@@ -268,7 +218,7 @@ Examples:
 				if w.Status == "completed" {
 					continue
 				}
-				if err := database.UpdateWorkerStatus(w.Name, "completed", nil, nil); err != nil {
+				if err := database.UpdateWorkerStatus(w.Name, "completed", nil); err != nil {
 					fmt.Printf("⚠ Failed to complete %s: %v\n", w.Name, err)
 				} else {
 					fmt.Printf("✓ Worker '%s' completed\n", w.Name)
@@ -321,12 +271,11 @@ Use -a to show all workers including completed ones.`,
 
 			// Filter workers
 			var filtered []struct {
-				Name    string
-				Branch  string
-				Role    string
-				Status  string
-				Session string
-				Task    string
+				Name     string
+				Status   string
+				Session  string
+				Progress int
+				Activity string
 			}
 
 			for _, w := range workers {
@@ -335,25 +284,23 @@ Use -a to show all workers including completed ones.`,
 					continue
 				}
 
-				task := w.CurrentTask
-				if len(task) > 30 {
-					task = task[:27] + "..."
+				activity := w.Activity
+				if len(activity) > 40 {
+					activity = activity[:37] + "..."
 				}
 
 				filtered = append(filtered, struct {
-					Name    string
-					Branch  string
-					Role    string
-					Status  string
-					Session string
-					Task    string
+					Name     string
+					Status   string
+					Session  string
+					Progress int
+					Activity string
 				}{
-					Name:    w.Name,
-					Branch:  w.Branch,
-					Role:    w.RoleName,
-					Status:  w.Status,
-					Session: w.SessionState,
-					Task:    task,
+					Name:     w.Name,
+					Status:   w.Status,
+					Session:  w.SessionState,
+					Progress: w.Progress,
+					Activity: activity,
 				})
 			}
 
@@ -376,12 +323,13 @@ Use -a to show all workers including completed ones.`,
 
 			// Table output (Docker ps style)
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tBRANCH\tROLE\tSTATUS\tSESSION\tTASK")
+			fmt.Fprintln(tw, "NAME\tSTATUS\tSESSION\tPROGRESS\tACTIVITY")
 			for _, w := range filtered {
 				statusStr := statusIcon(w.Status)
 				sessionStr := fmt.Sprintf("%s %s", sessionIcon(w.Session), w.Session)
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					w.Name, w.Branch, w.Role, statusStr, sessionStr, w.Task)
+				progressStr := fmt.Sprintf("%d%%", w.Progress)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+					w.Name, statusStr, sessionStr, progressStr, w.Activity)
 			}
 			tw.Flush()
 
@@ -404,15 +352,8 @@ func startCmd() *cobra.Command {
 Like 'docker start', this resumes a stopped worker.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			task, _ := cmd.Flags().GetString("task")
-
 			for _, name := range args {
-				var taskPtr *string
-				if task != "" {
-					taskPtr = &task
-				}
-
-				if err := database.UpdateWorkerStatus(name, "working", taskPtr, nil); err != nil {
+				if err := database.UpdateWorkerStatus(name, "working", nil); err != nil {
 					fmt.Printf("Error: %s - %v\n", name, err)
 					continue
 				}
@@ -421,8 +362,6 @@ Like 'docker start', this resumes a stopped worker.`,
 			return nil
 		},
 	}
-
-	cmd.Flags().StringP("task", "t", "", "Set task description")
 
 	return cmd
 }
@@ -444,7 +383,7 @@ Like 'docker stop', this stops a running worker.`,
 			}
 
 			for _, name := range args {
-				if err := database.UpdateWorkerStatus(name, status, nil, nil); err != nil {
+				if err := database.UpdateWorkerStatus(name, status, nil); err != nil {
 					fmt.Printf("Error: %s - %v\n", name, err)
 					continue
 				}
@@ -608,7 +547,7 @@ Like 'docker exec', runs a command in the worker's environment.`,
 			workerName := args[0]
 			command := args[1:]
 
-			// Get worker info
+			// Check worker exists in DB
 			worker, err := database.GetWorker(workerName)
 			if err != nil {
 				return err
@@ -617,18 +556,17 @@ Like 'docker exec', runs a command in the worker's environment.`,
 				return fmt.Errorf("worker not found: %s", workerName)
 			}
 
-			if worker.WorktreePath == "" {
-				return fmt.Errorf("worker %s has no worktree", workerName)
-			}
+			// Derive worktree path from convention: .devhive/worktrees/<name>
+			worktreePath := filepath.Join(".devhive", "worktrees", workerName)
 
 			// Check worktree exists
-			if _, err := os.Stat(worker.WorktreePath); os.IsNotExist(err) {
-				return fmt.Errorf("worktree does not exist: %s", worker.WorktreePath)
+			if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+				return fmt.Errorf("worktree does not exist: %s", worktreePath)
 			}
 
 			// Execute command
 			execCmd := createExecCommand(command[0], command[1:]...)
-			execCmd.Dir = worker.WorktreePath
+			execCmd.Dir = worktreePath
 			execCmd.Stdout = os.Stdout
 			execCmd.Stderr = os.Stderr
 			execCmd.Stdin = os.Stdin
@@ -649,7 +587,8 @@ func rolesCmd() *cobra.Command {
 		Short: "List roles (like docker images)",
 		Long: `List all available roles.
 
-Like 'docker images', shows available role templates.`,
+Like 'docker images', shows available role templates.
+Roles are defined in .devhive/roles/*.md files.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			showBuiltin, _ := cmd.Flags().GetBool("builtin")
 
@@ -666,28 +605,36 @@ Like 'docker images', shows available role templates.`,
 				return nil
 			}
 
-			// Show user-defined roles
-			roles, err := database.GetAllRoles()
+			// Show user-defined roles from .devhive/roles/ directory
+			rolesDir := filepath.Join(".devhive", "roles")
+			entries, err := os.ReadDir(rolesDir)
 			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Println("No roles directory found (.devhive/roles/)")
+					fmt.Println("\nTip: Use 'devhive roles --builtin' to see built-in roles")
+					return nil
+				}
 				return err
 			}
 
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tDESCRIPTION\tFILE")
+			fmt.Fprintln(tw, "NAME\tFILE")
 
-			// First show user-defined roles
-			for _, role := range roles {
-				desc := role.Description
-				if len(desc) > 40 {
-					desc = desc[:37] + "..."
+			roleCount := 0
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+					continue
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\n", role.Name, desc, role.RoleFile)
+				roleName := strings.TrimSuffix(entry.Name(), ".md")
+				roleFile := filepath.Join(rolesDir, entry.Name())
+				fmt.Fprintf(tw, "%s\t%s\n", roleName, roleFile)
+				roleCount++
 			}
 
 			tw.Flush()
 
-			if len(roles) == 0 {
-				fmt.Println("No user-defined roles")
+			if roleCount == 0 {
+				fmt.Println("No role files found in .devhive/roles/")
 				fmt.Println("\nTip: Use 'devhive roles --builtin' to see built-in roles")
 			}
 

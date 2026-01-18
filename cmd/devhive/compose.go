@@ -29,9 +29,14 @@ type ComposeRole struct {
 
 // ComposeDefaults represents default settings
 type ComposeDefaults struct {
-	CreateWorktree bool   `yaml:"create_worktree"`
-	BaseBranch     string `yaml:"base_branch"`
-	Sprint         string `yaml:"sprint"` // Default sprint ID
+	CreateWorktree bool              `yaml:"create_worktree"`
+	BaseBranch     string            `yaml:"base_branch"`
+	Sprint         string            `yaml:"sprint"`           // Default sprint ID
+	PromptTemplate string            `yaml:"prompt_template"`  // Custom prompt template for AI tools
+	ToolArgs       map[string]string `yaml:"tool_args"`        // Default args per tool (e.g., claude: "--dangerously-skip-permissions")
+	AutoPrompt     bool              `yaml:"auto_prompt"`      // Auto-generate initial prompt for AI tools
+	GenerateEnvrc  *bool             `yaml:"generate_envrc"`   // Generate .envrc file (default: true)
+	DirenvAllow    bool              `yaml:"direnv_allow"`     // Auto-run direnv allow after creating worktree
 }
 
 // ComposeWorker represents a worker definition in compose config
@@ -40,6 +45,9 @@ type ComposeWorker struct {
 	Role     string `yaml:"role"`
 	Task     string `yaml:"task"`
 	Tool     string `yaml:"tool"`     // AI tool: claude, codex, gemini, generic (default: generic)
+	Command  string `yaml:"command"`  // Command to execute (default: tool name, generic: $SHELL)
+	Args     string `yaml:"args"`     // Arguments for the command
+	Prompt   string `yaml:"prompt"`   // Initial prompt to pass to AI tool
 	Worktree string `yaml:"worktree"` // Override worktree path
 	Disabled bool   `yaml:"disabled"` // Skip this worker
 }
@@ -175,15 +183,26 @@ func (c *ComposeConfig) GenerateSprintID() string {
 }
 
 // GetTaskContent returns the task content for a worker
-// Checks .devhive/tasks/<name>.md first, then inline task field
+// Priority: 1. inline task as file path, 2. .devhive/tasks/<name>.md, 3. inline task as content
 func GetTaskContent(projectRoot, workerName, inlineTask string) string {
-	// Try to read from .devhive/tasks/<worker>.md
+	// 1. If inline task looks like a file path, read it directly
+	if inlineTask != "" && (strings.HasSuffix(inlineTask, ".md") || strings.Contains(inlineTask, "/")) {
+		filePath := inlineTask
+		if !filepath.IsAbs(filePath) {
+			filePath = filepath.Join(projectRoot, filePath)
+		}
+		if data, err := os.ReadFile(filePath); err == nil {
+			return string(data)
+		}
+	}
+
+	// 2. Try to read from .devhive/tasks/<worker>.md
 	taskFile := filepath.Join(projectRoot, ".devhive", "tasks", workerName+".md")
 	if data, err := os.ReadFile(taskFile); err == nil {
 		return string(data)
 	}
 
-	// Fall back to inline task
+	// 3. Fall back to inline task as content
 	return inlineTask
 }
 
@@ -208,6 +227,176 @@ func (w *ComposeWorker) GetEffectiveTool() string {
 		return "generic"
 	}
 	return w.Tool
+}
+
+// GetEffectiveCommand returns the command to execute
+// If command is set, use it; otherwise use tool name; generic defaults to $SHELL
+func (w *ComposeWorker) GetEffectiveCommand() string {
+	if w.Command != "" {
+		return w.Command
+	}
+	tool := w.GetEffectiveTool()
+	if tool == "generic" {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		return shell
+	}
+	return tool
+}
+
+// GetCommandWithArgs returns the full command string with arguments
+func (w *ComposeWorker) GetCommandWithArgs() string {
+	cmd := w.GetEffectiveCommand()
+	if w.Args != "" {
+		return cmd + " " + w.Args
+	}
+	return cmd
+}
+
+// GetFullCommand returns the complete command with default args and prompt
+func (w *ComposeWorker) GetFullCommand(workerName string, config *ComposeConfig, projectRoot string) string {
+	cmd := w.GetEffectiveCommand()
+	tool := w.GetEffectiveTool()
+
+	// Build args: default tool_args + worker-specific args
+	var argParts []string
+
+	// Add default tool args if defined
+	if config.Defaults.ToolArgs != nil {
+		if defaultArgs, ok := config.Defaults.ToolArgs[tool]; ok && defaultArgs != "" {
+			argParts = append(argParts, defaultArgs)
+		}
+	}
+
+	// Add worker-specific args
+	if w.Args != "" {
+		argParts = append(argParts, w.Args)
+	}
+
+	// Build the prompt
+	prompt := w.getEffectivePrompt(workerName, config, projectRoot)
+
+	// Combine command + args + prompt
+	if len(argParts) > 0 {
+		cmd = cmd + " " + strings.Join(argParts, " ")
+	}
+
+	if prompt != "" {
+		// Escape double quotes in prompt and wrap in quotes
+		escapedPrompt := strings.ReplaceAll(prompt, `"`, `\"`)
+		escapedPrompt = strings.ReplaceAll(escapedPrompt, `$`, `\$`)
+		escapedPrompt = strings.ReplaceAll(escapedPrompt, "`", "\\`")
+		cmd = cmd + ` "` + escapedPrompt + `"`
+	}
+
+	return cmd
+}
+
+// getEffectivePrompt returns the prompt to use for the AI tool
+func (w *ComposeWorker) getEffectivePrompt(workerName string, config *ComposeConfig, projectRoot string) string {
+	// 1. Worker-specific prompt takes precedence
+	if w.Prompt != "" {
+		return w.Prompt
+	}
+
+	// 2. Auto-prompt if enabled
+	if config.Defaults.AutoPrompt {
+		tool := w.GetEffectiveTool()
+		switch tool {
+		case "claude":
+			return fmt.Sprintf("CLAUDE.mdを読んでタスクを実行してください。進捗は devhive progress %s <0-100> で報告してください。", workerName)
+		case "codex":
+			return fmt.Sprintf("AGENTS.mdを読んでタスクを実行してください。進捗は devhive progress %s <0-100> で報告してください。", workerName)
+		case "gemini":
+			return fmt.Sprintf("GEMINI.mdを読んでタスクを実行してください。進捗は devhive progress %s <0-100> で報告してください。", workerName)
+		}
+	}
+
+	return ""
+}
+
+// TemplateVars holds variables for prompt template rendering
+type TemplateVars struct {
+	WorkerName  string
+	Branch      string
+	Role        string
+	Tool        string
+	Project     string
+	BaseBranch  string
+	TaskContent string
+	RoleContent string
+}
+
+// RenderPromptTemplate renders a prompt template with the given variables
+func RenderPromptTemplate(template string, vars TemplateVars) string {
+	result := template
+	result = strings.ReplaceAll(result, "{{worker_name}}", vars.WorkerName)
+	result = strings.ReplaceAll(result, "{{branch}}", vars.Branch)
+	result = strings.ReplaceAll(result, "{{role}}", vars.Role)
+	result = strings.ReplaceAll(result, "{{tool}}", vars.Tool)
+	result = strings.ReplaceAll(result, "{{project}}", vars.Project)
+	result = strings.ReplaceAll(result, "{{base_branch}}", vars.BaseBranch)
+	result = strings.ReplaceAll(result, "{{task_content}}", vars.TaskContent)
+	result = strings.ReplaceAll(result, "{{role_content}}", vars.RoleContent)
+	return result
+}
+
+// GetPromptTemplate returns the prompt template content
+// If prompt_template is a file path, reads the file; otherwise returns the string as-is
+// If empty, returns the default template
+func GetPromptTemplate(promptTemplate, projectRoot string) string {
+	if promptTemplate == "" {
+		return GetDefaultPromptTemplate()
+	}
+
+	// If it looks like a file path, read the file
+	if strings.HasSuffix(promptTemplate, ".md") || strings.Contains(promptTemplate, "/") {
+		filePath := promptTemplate
+		if !filepath.IsAbs(filePath) {
+			filePath = filepath.Join(projectRoot, filePath)
+		}
+		if data, err := os.ReadFile(filePath); err == nil {
+			return string(data)
+		}
+	}
+
+	// Otherwise return as-is (inline template)
+	return promptTemplate
+}
+
+// GetDefaultPromptTemplate returns the default prompt template
+func GetDefaultPromptTemplate() string {
+	return `あなたは **{{worker_name}}** ワーカーとして作業しています。
+
+## プロジェクト
+- プロジェクト: {{project}}
+- ブランチ: {{branch}}
+- ベースブランチ: {{base_branch}}
+
+## ロール
+{{role_content}}
+
+## タスク
+{{task_content}}
+
+## 実行ルール
+1. 上記タスクを順番に実行してください
+2. 進捗に応じて ` + "`devhive progress {{worker_name}} <0-100>`" + ` を実行
+3. 完了したら ` + "`devhive progress {{worker_name}} 100`" + ` を実行
+4. コミットメッセージは Conventional Commits 形式で
+5. 問題発生時は ` + "`devhive request help \"内容\"`" + ` でPMに連絡
+6. レビュー準備完了時は ` + "`devhive request review \"内容\"`" + `
+
+## 利用可能なコマンド
+- ` + "`devhive progress {{worker_name}} <0-100>`" + ` - 進捗更新
+- ` + "`devhive request help \"質問\"`" + ` - ヘルプ要求
+- ` + "`devhive request review \"内容\"`" + ` - レビュー依頼
+- ` + "`devhive request unblock \"理由\"`" + ` - ブロック解除
+- ` + "`devhive report \"進捗報告\"`" + ` - 進捗報告
+- ` + "`devhive msgs`" + ` - メッセージ確認
+`
 }
 
 // GenerateContextFiles generates context files for a worker in the worktree
@@ -303,91 +492,104 @@ func generateContextContent(workerName string, worker ComposeWorker, config *Com
 
 // generateClaudeContent creates Claude-specific CLAUDE.md
 func generateClaudeContent(workerName string, worker ComposeWorker, config *ComposeConfig, projectRoot string) string {
-	var sb strings.Builder
-
-	sb.WriteString("# Claude Code Instructions\n\n")
-	sb.WriteString(fmt.Sprintf("あなたは **%s** ワーカーとして作業しています。\n\n", workerName))
-
-	// Include CONTEXT.md reference
-	sb.WriteString("## Context\n\n")
-	sb.WriteString("詳細なコンテキストは [CONTEXT.md](./CONTEXT.md) を参照してください。\n\n")
-
-	// Role
-	sb.WriteString("## Role\n\n")
 	roleContent := getRoleContent(worker.Role, config, projectRoot)
-	if roleContent != "" {
-		sb.WriteString(roleContent)
-	}
-	sb.WriteString("\n")
-
-	// Task
-	sb.WriteString("## Task\n\n")
 	taskContent := GetTaskContent(projectRoot, workerName, worker.Task)
-	if taskContent != "" {
-		sb.WriteString(taskContent)
-	}
-	sb.WriteString("\n")
 
-	// Instructions
-	sb.WriteString("## Instructions\n\n")
-	sb.WriteString("- タスク完了時は `devhive progress 100` で進捗を更新\n")
-	sb.WriteString("- 問題発生時は `devhive request help \"内容\"` でPMに連絡\n")
-	sb.WriteString("- コードレビュー準備完了時は `devhive request review \"内容\"`\n")
-	sb.WriteString("- ブロックされた場合は `devhive request unblock \"理由\"`\n")
+	// Use custom template (supports file path or inline)
+	template := GetPromptTemplate(config.Defaults.PromptTemplate, projectRoot)
+
+	vars := TemplateVars{
+		WorkerName:  workerName,
+		Branch:      worker.Branch,
+		Role:        worker.Role,
+		Tool:        worker.GetEffectiveTool(),
+		Project:     config.Project,
+		BaseBranch:  config.Defaults.BaseBranch,
+		TaskContent: taskContent,
+		RoleContent: roleContent,
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Claude Code Instructions\n\n")
+	sb.WriteString(RenderPromptTemplate(template, vars))
 
 	return sb.String()
 }
 
 // generateCodexContent creates Codex-specific AGENTS.md
 func generateCodexContent(workerName string, worker ComposeWorker, config *ComposeConfig, projectRoot string) string {
-	var sb strings.Builder
-
-	sb.WriteString("# Codex Agent Instructions\n\n")
-	sb.WriteString(fmt.Sprintf("Worker: %s\n", workerName))
-	sb.WriteString(fmt.Sprintf("Branch: %s\n", worker.Branch))
-	sb.WriteString(fmt.Sprintf("Role: %s\n\n", worker.Role))
-
-	sb.WriteString("## Task\n\n")
+	roleContent := getRoleContent(worker.Role, config, projectRoot)
 	taskContent := GetTaskContent(projectRoot, workerName, worker.Task)
-	if taskContent != "" {
-		sb.WriteString(taskContent)
-	}
-	sb.WriteString("\n")
 
-	sb.WriteString("## Context\n\n")
-	sb.WriteString("See CONTEXT.md for full context.\n")
+	// Use custom template (supports file path or inline)
+	template := GetPromptTemplate(config.Defaults.PromptTemplate, projectRoot)
+
+	vars := TemplateVars{
+		WorkerName:  workerName,
+		Branch:      worker.Branch,
+		Role:        worker.Role,
+		Tool:        worker.GetEffectiveTool(),
+		Project:     config.Project,
+		BaseBranch:  config.Defaults.BaseBranch,
+		TaskContent: taskContent,
+		RoleContent: roleContent,
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Codex Agent Instructions\n\n")
+	sb.WriteString(RenderPromptTemplate(template, vars))
 
 	return sb.String()
 }
 
 // generateGeminiContent creates Gemini-specific GEMINI.md
 func generateGeminiContent(workerName string, worker ComposeWorker, config *ComposeConfig, projectRoot string) string {
-	var sb strings.Builder
-
-	sb.WriteString("# Gemini Instructions\n\n")
-	sb.WriteString(fmt.Sprintf("Worker: %s\n", workerName))
-	sb.WriteString(fmt.Sprintf("Branch: %s\n", worker.Branch))
-	sb.WriteString(fmt.Sprintf("Role: %s\n\n", worker.Role))
-
-	sb.WriteString("## Task\n\n")
+	roleContent := getRoleContent(worker.Role, config, projectRoot)
 	taskContent := GetTaskContent(projectRoot, workerName, worker.Task)
-	if taskContent != "" {
-		sb.WriteString(taskContent)
-	}
-	sb.WriteString("\n")
 
-	sb.WriteString("## Context\n\n")
-	sb.WriteString("See CONTEXT.md for full context.\n")
+	// Use custom template (supports file path or inline)
+	template := GetPromptTemplate(config.Defaults.PromptTemplate, projectRoot)
+
+	vars := TemplateVars{
+		WorkerName:  workerName,
+		Branch:      worker.Branch,
+		Role:        worker.Role,
+		Tool:        worker.GetEffectiveTool(),
+		Project:     config.Project,
+		BaseBranch:  config.Defaults.BaseBranch,
+		TaskContent: taskContent,
+		RoleContent: roleContent,
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Gemini Instructions\n\n")
+	sb.WriteString(RenderPromptTemplate(template, vars))
 
 	return sb.String()
 }
 
 // getRoleContent returns role content from config or .devhive/roles/<name>.md
 func getRoleContent(roleName string, config *ComposeConfig, projectRoot string) string {
+	if roleName == "" {
+		return ""
+	}
+
+	// 1. If role looks like a file path, read it directly
+	if strings.HasSuffix(roleName, ".md") || strings.Contains(roleName, "/") {
+		// Resolve relative path
+		filePath := roleName
+		if !filepath.IsAbs(filePath) {
+			filePath = filepath.Join(projectRoot, filePath)
+		}
+		if data, err := os.ReadFile(filePath); err == nil {
+			return string(data)
+		}
+	}
+
 	// Strip @ prefix if present
 	cleanName := strings.TrimPrefix(roleName, "@")
 
-	// 1. Check if role is defined in config
+	// 2. Check if role is defined in config
 	if role, ok := config.Roles[cleanName]; ok {
 		content, err := role.GetRoleContent(projectRoot)
 		if err == nil && content != "" {
@@ -398,7 +600,7 @@ func getRoleContent(roleName string, config *ComposeConfig, projectRoot string) 
 		}
 	}
 
-	// 2. Check .devhive/roles/<name>.md
+	// 3. Check .devhive/roles/<name>.md
 	roleFile := filepath.Join(projectRoot, ".devhive", "roles", cleanName+".md")
 	if data, err := os.ReadFile(roleFile); err == nil {
 		return string(data)

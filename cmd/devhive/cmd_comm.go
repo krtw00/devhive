@@ -63,7 +63,7 @@ Examples:
 
 			// If unblock, also update worker status
 			if reqType == "unblock" {
-				database.UpdateWorkerStatus(workerName, "blocked", nil, nil)
+				database.UpdateWorkerStatus(workerName, "blocked", nil)
 			}
 
 			fmt.Printf("✅ %s sent to PM\n", subject)

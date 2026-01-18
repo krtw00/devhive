@@ -25,26 +25,31 @@ project: my-project  # 省略時はディレクトリ名
 
 defaults:
   base_branch: develop
+  auto_prompt: true                          # AIツールに初期プロンプトを自動付与
+  tool_args:
+    claude: "--dangerously-skip-permissions" # Claude用デフォルト引数
+  direnv_allow: true                         # direnv自動許可
+  prompt_template: .devhive/templates/prompt.md  # AIへのプロンプトテンプレート
 
 workers:
   fe-auth:
     branch: feat/auth-ui
-    role: "@frontend"          # 組み込みロール
-    task: |
-      認証UIの実装
-      - ログインフォーム
-      - 登録フォーム
+    role: .devhive/roles/frontend.md   # ロールファイルのパス
+    task: .devhive/tasks/fe-auth.md    # タスクファイルのパス
+    tool: claude                        # AI tool: claude, codex, gemini, generic
 
   be-api:
     branch: feat/auth-api
-    role: "@backend"
-    task: 認証APIの実装
+    role: "@backend"                    # 組み込みロール
+    task: 認証APIの実装                 # インラインタスク
+    tool: codex
+    prompt: "AGENTS.mdを読んでタスク実行"  # カスタム初期プロンプト
 
   docs:
     branch: docs/api
     role: "@docs"
     task: API仕様書の作成
-    disabled: true             # 一時的に無効化
+    disabled: true                      # 一時的に無効化
 ```
 
 ## コマンド一覧
@@ -61,6 +66,9 @@ workers:
 | `devhive exec` | ワーカーのworktreeでコマンド実行 | `docker exec` |
 | `devhive roles` | 利用可能なロール一覧 | `docker images` |
 | `devhive config` | 設定内容を表示 | `docker compose config` |
+| `devhive tmux` | tmuxでワーカーを起動 | - |
+| `devhive tmux-kill` | tmuxセッションを終了 | - |
+| `devhive tmux-list` | tmuxセッション一覧 | - |
 
 ---
 
@@ -339,3 +347,151 @@ DevHiveは以下の順序で設定ファイルを検索します：
 4. `devhive.yml`
 
 `-f` オプションで明示的に指定することも可能です。
+
+---
+
+## ワーカー設定フィールド
+
+| フィールド | 説明 | デフォルト |
+|-----------|------|-----------|
+| `branch` | ワーカーのブランチ名 | 必須 |
+| `role` | ロール名またはファイルパス | - |
+| `task` | タスク内容またはファイルパス | - |
+| `tool` | AIツール（claude, codex, gemini, generic） | generic |
+| `command` | 実行コマンド（省略時はtool名） | tool名 |
+| `args` | コマンドの引数 | - |
+| `prompt` | AIツールへの初期プロンプト（auto_promptより優先） | - |
+| `worktree` | worktreeパスを上書き | - |
+| `disabled` | ワーカーを無効化 | false |
+
+### role / task のファイル参照
+
+`role` と `task` はファイルパスを指定できます：
+
+```yaml
+workers:
+  fe-auth:
+    role: .devhive/roles/frontend.md    # ファイルから読み込み
+    task: .devhive/tasks/fe-auth.md     # ファイルから読み込み
+```
+
+`.md` で終わるか `/` を含む場合はファイルパスとして解釈されます。
+
+---
+
+## defaults 設定
+
+```yaml
+defaults:
+  base_branch: develop                       # ベースブランチ
+  create_worktree: true                      # worktree自動作成
+  sprint: sprint-01                          # スプリントID
+  prompt_template: .devhive/templates/prompt.md  # プロンプトテンプレート
+  auto_prompt: true                          # AIツール起動時に初期プロンプトを自動生成
+  tool_args:                                 # ツール別デフォルト引数
+    claude: "--dangerously-skip-permissions"
+    codex: "--approval-mode full-auto"
+  generate_envrc: true                       # .envrc生成（デフォルト: true）
+  direnv_allow: true                         # devhive up時に自動でdirenv allow
+```
+
+### auto_prompt
+
+`auto_prompt: true` を設定すると、`devhive tmux` 実行時にAIツールに初期プロンプトが渡されます：
+
+- **claude**: `"CLAUDE.mdを読んでタスクを実行してください。進捗は devhive progress <worker> <0-100> で報告してください。"`
+- **codex**: `"AGENTS.mdを読んでタスクを実行してください。..."`
+- **gemini**: `"GEMINI.mdを読んでタスクを実行してください。..."`
+
+### tool_args
+
+ツール別のデフォルト引数を設定できます。ワーカーの `args` フィールドと合わせて使用されます：
+
+```yaml
+defaults:
+  tool_args:
+    claude: "--dangerously-skip-permissions --model sonnet"
+
+workers:
+  frontend:
+    tool: claude
+    args: "--verbose"  # 最終的なコマンド: claude --dangerously-skip-permissions --model sonnet --verbose "..."
+```
+
+### プロンプトテンプレート
+
+`prompt_template` には以下の変数が使用可能：
+
+| 変数 | 説明 |
+|------|------|
+| `{{worker_name}}` | ワーカー名 |
+| `{{branch}}` | ブランチ名 |
+| `{{role}}` | ロール名 |
+| `{{tool}}` | ツール名 |
+| `{{project}}` | プロジェクト名 |
+| `{{base_branch}}` | ベースブランチ |
+| `{{task_content}}` | タスク内容（展開済み） |
+| `{{role_content}}` | ロール内容（展開済み） |
+
+---
+
+## devhive tmux
+
+tmuxセッションでワーカーを一括起動します。
+
+```bash
+# 全ワーカーをtmuxで起動
+devhive tmux
+
+# 特定のワーカーのみ
+devhive tmux frontend backend
+
+# セッション名を指定
+devhive tmux --session myapp
+
+# 作成後アタッチしない
+devhive tmux --attach=false
+
+# 実行内容を確認（dry-run）
+devhive tmux --dry-run
+```
+
+### オプション
+
+| オプション | 短縮形 | 説明 |
+|-----------|-------|------|
+| `--session` | `-s` | セッション名（デフォルト: devhive-<project>） |
+| `--attach` | - | 作成後にアタッチ（デフォルト: true） |
+| `--dry-run` | - | 実行内容を表示 |
+
+### 動作
+
+1. tmuxセッションを作成
+2. 各ワーカー用のペインを分割
+3. 各ペインで `DEVHIVE_WORKER=<name>` を設定しコマンド実行
+4. `tiled` レイアウトで均等配置
+5. ペインタイトルにワーカー名を表示
+
+---
+
+## devhive tmux-kill
+
+tmuxセッションを終了します。
+
+```bash
+# デフォルトセッションを終了
+devhive tmux-kill
+
+# 特定のセッションを終了
+devhive tmux-kill myapp
+```
+
+---
+
+## devhive tmux-list
+
+DevHiveのtmuxセッション一覧を表示します。
+
+```bash
+devhive tmux-list
+```

@@ -125,3 +125,9 @@ func createWorkerEnvrc(worktreePath, workerName string) error {
 	content := fmt.Sprintf("export DEVHIVE_WORKER=%s\n", workerName)
 	return os.WriteFile(envrcPath, []byte(content), 0644)
 }
+
+// runDirenvAllow runs 'direnv allow' in the specified directory
+func runDirenvAllow(worktreePath string) error {
+	cmd := exec.Command("direnv", "allow", worktreePath)
+	return cmd.Run()
+}
