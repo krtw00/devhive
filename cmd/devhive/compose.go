@@ -37,6 +37,7 @@ type ComposeDefaults struct {
 	AutoPrompt     bool              `yaml:"auto_prompt"`      // Auto-generate initial prompt for AI tools
 	GenerateEnvrc  *bool             `yaml:"generate_envrc"`   // Generate .envrc file (default: true)
 	DirenvAllow    bool              `yaml:"direnv_allow"`     // Auto-run direnv allow after creating worktree
+	AutoComplete   bool              `yaml:"auto_complete"`    // Auto-mark worker as completed when progress reaches 100%
 }
 
 // ComposeWorker represents a worker definition in compose config

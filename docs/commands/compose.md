@@ -388,6 +388,7 @@ defaults:
   sprint: sprint-01                          # スプリントID
   prompt_template: .devhive/templates/prompt.md  # プロンプトテンプレート
   auto_prompt: true                          # AIツール起動時に初期プロンプトを自動生成
+  auto_complete: true                        # progress 100%で自動的にcompletedに
   tool_args:                                 # ツール別デフォルト引数
     claude: "--dangerously-skip-permissions"
     codex: "--approval-mode full-auto"
@@ -416,6 +417,20 @@ workers:
   frontend:
     tool: claude
     args: "--verbose"  # 最終的なコマンド: claude --dangerously-skip-permissions --model sonnet --verbose "..."
+```
+
+### auto_complete
+
+`auto_complete: true` を設定すると、`devhive progress <worker> 100` 実行時に自動的にワーカーのステータスが `completed` になります：
+
+```yaml
+defaults:
+  auto_complete: true
+
+# 使用例
+# $ devhive progress frontend 100
+# ✅ frontend progress: 100%
+# ✅ frontend auto-completed
 ```
 
 ### プロンプトテンプレート

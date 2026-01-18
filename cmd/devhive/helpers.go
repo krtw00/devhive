@@ -128,6 +128,13 @@ func createWorkerEnvrc(worktreePath, workerName string) error {
 
 // runDirenvAllow runs 'direnv allow' in the specified directory
 func runDirenvAllow(worktreePath string) error {
-	cmd := exec.Command("direnv", "allow", worktreePath)
-	return cmd.Run()
+	// Run direnv allow with the .envrc path
+	envrcPath := filepath.Join(worktreePath, ".envrc")
+	cmd := exec.Command("direnv", "allow", envrcPath)
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, string(output))
+	}
+	return nil
 }

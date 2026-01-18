@@ -1,158 +1,143 @@
-# フィードバック: AIエージェント統合の課題 (v2)
+# フィードバック: AIエージェント統合の課題 (v3)
 
 ## 概要
 
-Katorin2プロジェクトでDevHive v2（tmux統合版）を使用した並列AI開発を試行した際に発見した問題点と改善提案。
+Katorin2プロジェクトでDevHive（compose.md更新後）を使用した並列AI開発を試行。
 
-## 試行内容
+## 試行結果
 
-1. 4つのワーカー（series, team-ui, bracket, realtime）を`tool: claude`で定義
-2. `devhive up` で CLAUDE.md が自動生成されることを確認
-3. `devhive tmux` で4分割tmuxセッションを起動
-4. 各ペインでClaude Codeが起動
+### ドキュメントに記載されているが未実装の機能
 
-## 改善された点
+`docs/commands/compose.md` に以下の機能が記載されているが、実際には動作しない：
 
-- `tool: claude` 指定で `CLAUDE.md` が自動生成される
-- ロール内容がCLAUDE.mdに完全展開される
-- タスク内容がCLAUDE.mdに完全展開される
-- `devhive tmux` コマンドでtmux統合が簡単に
-- `DEVHIVE_WORKER` 環境変数が自動設定される
+#### 1. `defaults.auto_prompt`
 
-## 残存する問題点
-
-### 1. Claude Codeがタスクを自動実行しない
-
-**現象**:
+**ドキュメント記載**:
+```yaml
+defaults:
+  auto_prompt: true  # AIツール起動時に初期プロンプトを自動生成
 ```
-❯ export DEVHIVE_WORKER=bracket && claude
-
- ▐▛███▜▌   Claude Code v2.1.12
-▝▜█████▛▘  Opus 4.5 · Claude Max
-
-─────────────────────────────────────────────────────────────────────────────
-❯ Try "refactor tournament.ts"    ← 入力待ち状態
-```
-
-**原因**:
-- Claude Codeは`CLAUDE.md`を**参照用**として読み込むが、自動実行はしない
-- 起動後にユーザー入力を待つ
 
 **期待動作**:
-- Claude Code起動時に`CLAUDE.md`のタスクを自動的に開始する
+> `auto_prompt: true` を設定すると、`devhive tmux` 実行時にAIツールに初期プロンプトが渡されます：
+> - **claude**: `"CLAUDE.mdを読んでタスクを実行してください。..."`
 
-### 2. direnvエラー
+**実際の動作**:
+- `devhive tmux --dry-run` では `claude` のみ表示（プロンプトなし）
+- 起動後、Claudeは入力待ち状態
 
-**現象**:
+#### 2. `defaults.tool_args`
+
+**ドキュメント記載**:
+```yaml
+defaults:
+  tool_args:
+    claude: "--dangerously-skip-permissions"
+```
+
+**期待動作**:
+> ツール別のデフォルト引数を設定できます
+
+**実際の動作**:
+- `devhive tmux --dry-run` では引数なしで `claude` のみ
+- 実行コマンド: `export DEVHIVE_WORKER=bracket && claude`（引数なし）
+
+#### 3. `defaults.direnv_allow`
+
+**ドキュメント記載**:
+```yaml
+defaults:
+  direnv_allow: true  # devhive up時に自動でdirenv allow
+```
+
+**実際の動作**:
 ```
 direnv: error /home/.../worktrees/bracket/.envrc is blocked.
 Run `direnv allow` to approve its content
 ```
 
-**原因**:
-- DevHiveが生成する`.envrc`ファイルがdirenvでブロックされる
-- 各worktreeで手動で`direnv allow`が必要
+### 実装されている機能
 
-**改善案**:
-- `.envrc`を生成しないオプション
-- または`devhive up`時に自動で`direnv allow`を実行
+以下は正常に動作：
 
-### 3. 初期プロンプトが渡されない
+- `tool: claude` で `CLAUDE.md` 生成
+- `CLAUDE.md` にロール・タスク内容が展開される
+- `devhive tmux` でtmuxセッション作成
+- `DEVHIVE_WORKER` 環境変数の設定
 
-**現状**:
-```bash
-claude  # 引数なしで起動
+## 実装が必要な箇所
+
+### 1. tmuxコマンド生成部分
+
+現在:
+```go
+// 推測: tmux.go内
+command := toolName  // "claude"
 ```
 
-**問題**:
-- Claude Codeに初期タスクを渡す方法がない
-- `claude "タスクを実行"` のような形式が必要
+必要な変更:
+```go
+command := toolName
+if args := getToolArgs(toolName); args != "" {
+    command += " " + args
+}
+if autoPrompt && prompt := generateAutoPrompt(toolName); prompt != "" {
+    command += " " + shellescape(prompt)
+}
+```
 
-## 改善提案
+### 2. devhive up時のdirenv処理
 
-### 提案1: 初期プロンプト付きで起動
+```go
+// worktree作成後
+if defaults.DirenvAllow {
+    exec.Command("direnv", "allow", worktreePath).Run()
+}
+```
+
+### 3. 設定ファイルパース
+
+`defaults` セクションの新フィールドをパースするstructの更新が必要:
+
+```go
+type Defaults struct {
+    BaseBranch     string            `yaml:"base_branch"`
+    AutoPrompt     bool              `yaml:"auto_prompt"`
+    ToolArgs       map[string]string `yaml:"tool_args"`
+    DirenvAllow    bool              `yaml:"direnv_allow"`
+    PromptTemplate string            `yaml:"prompt_template"`
+}
+```
+
+## テスト用設定
 
 ```yaml
+# .devhive.yaml
+version: "1"
+project: Katorin2
+
+defaults:
+  base_branch: main
+  auto_prompt: true
+  direnv_allow: true
+  tool_args:
+    claude: "--dangerously-skip-permissions"
+
 workers:
   series:
     branch: feat/series-complete
+    role: .devhive/roles/fullstack.md
+    task: .devhive/tasks/series.md
     tool: claude
-    command: claude "CLAUDE.mdのタスクを実行してください"
-    # または
-    auto_prompt: true  # CLAUDE.md の内容を自動でプロンプトとして渡す
 ```
 
-### 提案2: --dangerously-skip-permissions オプション
-
-```yaml
-defaults:
-  claude_flags:
-    - "--dangerously-skip-permissions"
-
-workers:
-  series:
-    tool: claude
-    # → claude --dangerously-skip-permissions で起動
-```
-
-### 提案3: カスタムコマンド
-
-```yaml
-workers:
-  series:
-    tool: claude
-    command: |
-      claude --dangerously-skip-permissions \
-        "CLAUDE.mdを読んでタスクを実行してください。完了したらdevhive progressで報告してください。"
-```
-
-### 提案4: direnv自動許可
-
-```yaml
-defaults:
-  direnv_allow: true  # devhive up 時に自動で direnv allow
-
-# または .envrc を生成しない
-defaults:
-  generate_envrc: false
-```
-
-### 提案5: Claude Code専用起動スクリプト
-
-DevHiveが各worktreeに起動スクリプトを生成:
-
+**期待されるtmuxコマンド**:
 ```bash
-# .devhive/worktrees/series/start.sh
-#!/bin/bash
-export DEVHIVE_WORKER=series
-cd "$(dirname "$0")"
-
-# CLAUDE.md の Task セクションを抽出してプロンプトに
-TASK=$(sed -n '/^## タスク$/,/^## /p' CLAUDE.md | head -n -1)
-
-claude --dangerously-skip-permissions "$TASK"
+export DEVHIVE_WORKER=series && claude --dangerously-skip-permissions "CLAUDE.mdを読んでタスクを実行してください。進捗は devhive progress series <0-100> で報告してください。"
 ```
-
-## 優先度
-
-1. **高**: 初期プロンプト付きでClaude起動（提案1 or 3）
-2. **高**: --dangerously-skip-permissions オプション対応（提案2）
-3. **中**: direnv問題の解決（提案4）
-4. **低**: 起動スクリプト生成（提案5）
-
-## 補足: Claude Codeの自動実行について
-
-Claude Codeは`CLAUDE.md`を**コンテキスト**として読み込むが、それだけでは自動実行されない。
-自動実行には以下のいずれかが必要:
-
-1. **引数でプロンプトを渡す**: `claude "タスクを実行"`
-2. **--print オプション**: `claude --print "タスク"` （非対話モード）
-3. **パイプ入力**: `echo "タスクを実行" | claude`
-
-DevHiveのtmux統合では、これらの方法でClaude Codeに初期タスクを渡す仕組みが必要。
 
 ## 関連
 
-- 試行プロジェクト: Katorin2（大会管理システム）
+- 試行プロジェクト: Katorin2
 - 試行日: 2026-01-18
-- DevHiveバージョン: tmux統合版
+- compose.md: 機能ドキュメント（実装より先行）

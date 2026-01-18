@@ -110,9 +110,12 @@ func progressCmd() *cobra.Command {
 		Short: "Update worker progress",
 		Long: `Update the progress percentage of a worker (0-100).
 
+If defaults.auto_complete is true in .devhive.yaml, the worker will be
+automatically marked as completed when progress reaches 100%.
+
 Examples:
   devhive progress frontend 50    # Set frontend to 50%
-  devhive progress backend 100    # Set backend to 100%`,
+  devhive progress backend 100    # Set backend to 100% (auto-complete if configured)`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workerName := args[0]
@@ -126,6 +129,22 @@ Examples:
 			}
 
 			fmt.Printf("✅ %s progress: %d%%\n", workerName, progress)
+
+			// Auto-complete if progress is 100% and auto_complete is enabled
+			if progress == 100 {
+				configFile, _ := FindComposeFile()
+				if configFile != "" {
+					config, err := LoadComposeFile(configFile)
+					if err == nil && config.Defaults.AutoComplete {
+						if err := database.UpdateWorkerStatus(workerName, "completed", nil); err != nil {
+							fmt.Printf("⚠ Failed to auto-complete: %v\n", err)
+						} else {
+							fmt.Printf("✅ %s auto-completed\n", workerName)
+						}
+					}
+				}
+			}
+
 			return nil
 		},
 	}
