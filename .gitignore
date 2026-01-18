@@ -7,3 +7,6 @@
 
 # OS
 .DS_Store
+
+# DevHive project data
+.devhive/
