@@ -128,3 +128,10 @@ func parseEventData(data, key string) string {
 	}
 	return ""
 }
+
+// createWorkerEnvrc creates a .envrc file in the worktree directory for direnv
+func createWorkerEnvrc(worktreePath, workerName string) error {
+	envrcPath := filepath.Join(worktreePath, ".envrc")
+	content := fmt.Sprintf("export DEVHIVE_WORKER=%s\n", workerName)
+	return os.WriteFile(envrcPath, []byte(content), 0644)
+}

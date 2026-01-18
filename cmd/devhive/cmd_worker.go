@@ -39,6 +39,13 @@ func workerCmd() *cobra.Command {
 				}
 				worktree = wt
 				fmt.Printf("✓ Worktree created at %s\n", worktree)
+
+				// Create .envrc for direnv
+				if err := createWorkerEnvrc(worktree, workerName); err != nil {
+					fmt.Printf("⚠ Failed to create .envrc: %v\n", err)
+				} else {
+					fmt.Printf("✓ Created .envrc (run 'direnv allow' in worktree)\n")
+				}
 			}
 
 			err = database.RegisterWorker(workerName, sprint.ID, branch, roleName, worktree)
