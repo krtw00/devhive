@@ -51,6 +51,7 @@ workers:
 
 ```
 devhive
+├── init [name]         # プロジェクト初期化
 ├── up [worker...]      # ワーカー起動（worktree自動作成）
 ├── down [worker...]    # ワーカー停止
 ├── ps                  # ワーカー一覧

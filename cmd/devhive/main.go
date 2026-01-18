@@ -18,14 +18,15 @@ func main() {
 		Long: `DevHive - Docker-style parallel development coordination
 
 Quick Start:
-  1. Create .devhive.yaml in your project root
-  2. devhive up        Start all workers (auto-creates worktrees)
-  3. devhive ps        List running workers
-  4. devhive logs -f   Follow event logs
-  5. devhive down      Stop all workers`,
+  1. devhive init      Initialize project (creates .devhive/)
+  2. Edit .devhive.yaml to define workers
+  3. devhive up        Start all workers (auto-creates worktrees)
+  4. devhive ps        List running workers
+  5. devhive logs -f   Follow event logs
+  6. devhive down      Stop all workers`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Skip DB for version command
-			if cmd.Name() == "version" || cmd.Name() == "help" {
+			// Skip DB for commands that don't need it
+			if cmd.Name() == "version" || cmd.Name() == "help" || cmd.Name() == "init" {
 				return nil
 			}
 
@@ -50,6 +51,7 @@ Quick Start:
 
 	// Commands
 	rootCmd.AddCommand(versionCmd())
+	rootCmd.AddCommand(initCmd())
 
 	// Docker-style commands
 	rootCmd.AddCommand(upCmd())

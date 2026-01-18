@@ -20,6 +20,10 @@
 ## クイックリファレンス
 
 ```bash
+# 初期化
+devhive init              # プロジェクト初期化
+devhive init -t           # テンプレート付きで初期化
+
 # 基本ワークフロー
 devhive up                # 全て自動セットアップ
 devhive ps                # ワーカー一覧

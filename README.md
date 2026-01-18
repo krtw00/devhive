@@ -16,7 +16,13 @@ go build -o ~/bin/devhive ./cmd/devhive
 
 ## クイックスタート
 
-### 1. 設定ファイル作成
+### 1. 初期化
+
+```bash
+devhive init --template   # .devhive/ と テンプレート作成
+```
+
+### 2. 設定編集
 
 ```yaml
 # .devhive.yaml
@@ -32,14 +38,14 @@ workers:
     task: API実装
 ```
 
-### 2. 起動
+### 3. 起動
 
 ```bash
 devhive up       # 全て自動セットアップ
 devhive ps       # 状態確認
 ```
 
-### 3. 完了
+### 4. 完了
 
 ```bash
 devhive down
@@ -92,6 +98,7 @@ workers:
 
 | コマンド | 説明 |
 |----------|------|
+| `devhive init [-t]` | 初期化（-t: テンプレート作成） |
 | `devhive up` | ワーカー起動 |
 | `devhive down` | ワーカー停止 |
 | `devhive ps` | ワーカー一覧 |
