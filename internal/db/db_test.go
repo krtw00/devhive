@@ -433,13 +433,11 @@ func TestProjectDetection(t *testing.T) {
 	// Reset
 	ProjectName = ""
 
-	// Test with environment variable
-	os.Setenv("DEVHIVE_PROJECT", "env-project")
+	// Test fallback to directory name
 	project = DetectProject()
-	if project != "env-project" {
-		t.Errorf("Expected 'env-project', got '%s'", project)
+	if project == "" {
+		t.Error("Expected non-empty project name from directory fallback")
 	}
-	os.Unsetenv("DEVHIVE_PROJECT")
 }
 
 func TestWorkerWithRole(t *testing.T) {

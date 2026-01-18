@@ -2,23 +2,20 @@
 
 ## 目次
 
-- [グローバルオプション](#グローバルオプション)
 - [Compose コマンド](compose.md) - Docker風インターフェース
 - [Hooks 連携](hooks.md) - Claude Code連携
 
 ## グローバルオプション
 
 ```
--h, --help              ヘルプを表示
--P, --project <name>    プロジェクト名を指定
+-h, --help    ヘルプを表示
 ```
 
 ## 環境変数
 
-| 変数名 | 説明 | 例 |
-|--------|------|-----|
-| DEVHIVE_WORKER | デフォルトのワーカー名 | frontend |
-| DEVHIVE_PROJECT | プロジェクト名 | myapp |
+| 変数名 | 説明 | 設定方法 |
+|--------|------|----------|
+| DEVHIVE_WORKER | ワーカー名 | `devhive up` で自動生成される `.envrc` |
 
 ## クイックリファレンス
 

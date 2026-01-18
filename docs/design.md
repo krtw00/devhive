@@ -15,12 +15,15 @@ DevHiveは、Git Worktree + 複数のAIエージェント（Claude Code等）に
 
 ```
 myapp/
-├── .devhive.yaml    # 設定ファイル（git管理）
-├── .devhive.db      # 状態DB（gitignore）
-├── .worktrees/      # Git Worktrees（gitignore）
-│   ├── frontend/
-│   └── backend/
-└── src/
+├── .devhive.yaml        # 設定ファイル（git管理）
+└── .devhive/            # DevHiveデータ（gitignore）
+    ├── devhive.db       # 状態DB
+    ├── worktrees/       # Git Worktrees
+    │   ├── frontend/
+    │   └── backend/
+    ├── roles/           # ロール定義（MD）
+    ├── tasks/           # タスク詳細（MD）
+    └── workers/         # ワーカー管理情報（MD）
 ```
 
 ## 4. 設定ファイル

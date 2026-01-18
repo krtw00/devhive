@@ -6,9 +6,13 @@ DevHiveはDocker Composeに似た操作感でワーカーを管理できます�
 
 ```
 myapp/
-├── .devhive.yaml    # 設定ファイル（git管理）
-├── .devhive.db      # 状態DB（自動生成、gitignore）
-└── .worktrees/      # Git Worktrees（自動生成、gitignore）
+├── .devhive.yaml        # 設定ファイル（git管理）
+└── .devhive/            # DevHiveデータ（自動生成、gitignore）
+    ├── devhive.db       # 状態DB
+    ├── worktrees/       # Git Worktrees
+    ├── roles/           # ロール定義（MD）
+    ├── tasks/           # タスク詳細（MD）
+    └── workers/         # ワーカー管理情報（MD）
 ```
 
 ## 設定ファイル

@@ -1,7 +1,0 @@
-# Sprint Workers Configuration
-# Format: name branch [role]
-# Lines starting with # are comments
-
-frontend feat/ui-improvements frontend
-backend feat/api-v2 backend
-test-docs docs/e2e-tests test-doc
