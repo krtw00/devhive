@@ -1,8 +1,17 @@
 # DevHive
 
-> **⚠️ MIGRATION NOTICE (2026-01-20)**
+> **⚠️ MAINTENANCE MODE (2026-01-20)**
 >
-> DevHiveの機能は[agentmine](https://github.com/krtw00/agentmine)に統合されます。
+> **DevHiveは保守モードに移行しました。新機能開発は停止し、バグ修正のみ継続します。**
+>
+> DevHiveの機能は[agentmine](https://github.com/krtw00/agentmine) Phase 4（2026-07予定）でTypeScript再実装されます。
+>
+> **Timeline:**
+> ```
+> 2026-01  ● 保守モード移行（現在）
+> 2026-07  ○ agentmine Phase 4完了（Docker風IF実装）
+> 2026-10  ○ DevHive完全廃止・アーカイブ化
+> ```
 >
 > **Why agentmine?**
 > - ✅ **DevHive機能を全て含む** - worktree隔離、並列AI実行、状態管理
@@ -17,12 +26,16 @@
 > devhive up
 > devhive ps
 >
-> # agentmine（移行後）
-> agentmine worker run <task-id> --exec
-> agentmine worker status
+> # agentmine Phase 4以降
+> agentmine worker up       # devhive up相当
+> agentmine worker ps       # devhive ps相当
+> agentmine worker down     # devhive down相当
 > ```
 >
-> **Status:** DevHiveは保守モードに移行。新機能開発はagentmineで継続。
+> **Migration Tool（2026-07提供予定）:**
+> ```bash
+> agentmine migrate --from-devhive .devhive.yaml
+> ```
 >
 > **Repository:** https://github.com/krtw00/agentmine
 
