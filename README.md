@@ -1,5 +1,33 @@
 # DevHive
 
+> **⚠️ MIGRATION NOTICE (2026-01-20)**
+>
+> DevHiveの機能は[agentmine](https://github.com/krtw00/agentmine)に統合されます。
+>
+> **Why agentmine?**
+> - ✅ **DevHive機能を全て含む** - worktree隔離、並列AI実行、状態管理
+> - ✅ **強化されたセキュリティ** - スコープ制御（sparse-checkout + chmod）
+> - ✅ **チーム協業対応** - Redmine的な共有DB、Web UI
+> - ✅ **Memory Bank** - プロジェクト知識の永続化
+> - ✅ **MCP統合** - Cursor/Windsurf等のIDE連携
+>
+> **Migration Path:**
+> ```bash
+> # DevHive（現在）
+> devhive up
+> devhive ps
+>
+> # agentmine（移行後）
+> agentmine worker run <task-id> --exec
+> agentmine worker status
+> ```
+>
+> **Status:** DevHiveは保守モードに移行。新機能開発はagentmineで継続。
+>
+> **Repository:** https://github.com/krtw00/agentmine
+
+---
+
 Git Worktree + 複数AIエージェントによる並列開発の状態管理CLIツール。Docker風インターフェース。
 
 ## 特徴
@@ -163,6 +191,21 @@ workers:
   dev:
     role: "開発担当"
 ```
+
+## agentmineとの機能比較
+
+| 機能 | DevHive | agentmine |
+|------|---------|-----------|
+| Worktree隔離 | ✅ | ✅ |
+| 並列AI実行 | ✅ | ✅ |
+| Docker風CLI | ✅ | ✅（実装予定） |
+| スコープ制御 | ❌ | ✅ sparse-checkout + chmod |
+| Web UI | ❌ | ✅ Next.js |
+| チーム協業 | ❌ | ✅ 共有PostgreSQL |
+| Memory Bank | ❌ | ✅ |
+| MCP統合 | ❌ | ✅ |
+| ワーカー通信 | ✅ | ⏳（統合予定） |
+| 進捗管理 | ✅ | ⏳（統合予定） |
 
 ## gitignore
 
